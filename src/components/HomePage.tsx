@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Activity,
   Play,
   Gamepad2,
   Globe,
+  Users,
   ChevronRight,
   Loader2,
   Download,
@@ -36,9 +37,10 @@ interface ServerInfo {
   address: string;
   port: number;
   icon?: string | null;
-  motd: string | null;
-  player_count: string | null;
-  ping: number | null;
+  motd?: string | null;
+  player_count?: string | null;
+  playerCount?: string | null;
+  ping?: number | null;
 }
 
 interface MundoInfo {
@@ -49,6 +51,26 @@ interface MundoInfo {
   lastPlayed?: string;
   sizeOnDisk?: string;
 }
+
+interface ServidorDome {
+  id: string;
+  nome: string;
+  endereco: string;
+  porta?: number;
+  icone?: string;
+  aliases?: string[];
+}
+
+const SERVIDORES_DOME: ServidorDome[] = [
+  {
+    id: "emergence",
+    nome: "Emergence",
+    endereco: "emc.domestudios.com.br",
+    porta: 25565,
+    icone: "/dome.png",
+    aliases: ["emc.domestudios.com"],
+  },
+];
 
 function validarData(data: string): Date | null {
   const dataConvertida = new Date(data);
@@ -86,6 +108,39 @@ function tempoRelativo(data: string): string {
   return new Date(data).toLocaleDateString("pt-BR", {
     day: "2-digit",
     month: "short",
+  });
+}
+
+function obterContagemJogadores(servidor: ServerInfo): string | undefined {
+  return servidor.player_count ?? servidor.playerCount ?? undefined;
+}
+
+function normalizarEndereco(host: string): string {
+  return host.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function obterEnderecosDome(servidor: ServidorDome): string[] {
+  return [servidor.endereco, ...(servidor.aliases ?? [])].map(normalizarEndereco);
+}
+
+async function pingServidorComTimeout(
+  address: string,
+  timeoutMs = 7000
+): Promise<ServerInfo> {
+  return new Promise((resolve, reject) => {
+    const temporizador = window.setTimeout(() => {
+      reject(new Error("Tempo esgotado ao verificar servidor"));
+    }, timeoutMs);
+
+    invoke<ServerInfo>("ping_server", { address })
+      .then((resposta) => {
+        window.clearTimeout(temporizador);
+        resolve(resposta);
+      })
+      .catch((erro) => {
+        window.clearTimeout(temporizador);
+        reject(erro);
+      });
   });
 }
 
@@ -208,6 +263,14 @@ export default function HomePage({
         />
       )}
 
+      <SecaoServidoresDome
+        instances={instances}
+        instanciaAtivaId={instanciaAtivaId}
+        user={user}
+        onLaunchServer={onLaunchServer}
+        onLogin={onLogin}
+      />
+
       <SecaoDestaque
         titulo="Descubra modpacks"
         itens={modpacks}
@@ -226,6 +289,264 @@ export default function HomePage({
         onAbrirProjeto={(item) => onAbrirProjeto({ ...item, source: "modrinth" })}
       />
     </div>
+  );
+}
+
+function SecaoServidoresDome({
+  instances,
+  instanciaAtivaId,
+  user,
+  onLaunchServer,
+  onLogin,
+}: {
+  instances: Instance[];
+  instanciaAtivaId: string | null;
+  user: MinecraftAccount | null;
+  onLaunchServer: (id: string, address: string) => void;
+  onLogin: () => void;
+}) {
+  const [idsServidoresOcultos, setIdsServidoresOcultos] = useState<string[]>([]);
+  const [statusServidores, setStatusServidores] = useState<
+    Record<
+      string,
+      {
+        online: boolean;
+        ping?: number;
+        jogadores?: string;
+        motd?: string;
+        icon?: string | null;
+        erro?: string;
+      }
+    >
+  >({});
+
+  const instanciaSelecionada =
+    instances.find((instancia) => instancia.id === instanciaAtivaId) ?? instances[0] ?? null;
+
+  const servidoresDomeVisiveis = useMemo(() => {
+    const ocultos = new Set(idsServidoresOcultos);
+    return SERVIDORES_DOME.filter((servidor) => !ocultos.has(servidor.id));
+  }, [idsServidoresOcultos]);
+
+  useEffect(() => {
+    let cancelado = false;
+
+    const mapearServidoresJaSalvos = async () => {
+      const idsEncontrados = new Set<string>();
+
+      await Promise.all(
+        instances.map(async (instancia) => {
+          try {
+            const servidores = await invoke<ServerInfo[]>("get_servers", {
+              instanceId: instancia.id,
+            });
+
+            for (const servidorSalvo of servidores) {
+              const enderecoSalvo = normalizarEndereco(servidorSalvo.address);
+              for (const servidorDome of SERVIDORES_DOME) {
+                if (obterEnderecosDome(servidorDome).includes(enderecoSalvo)) {
+                  idsEncontrados.add(servidorDome.id);
+                }
+              }
+            }
+          } catch {
+            // Ignorar instâncias com erro de leitura dos servidores.
+          }
+        })
+      );
+
+      if (!cancelado) {
+        setIdsServidoresOcultos(Array.from(idsEncontrados));
+      }
+    };
+
+    if (instances.length > 0) {
+      mapearServidoresJaSalvos();
+      return () => {
+        cancelado = true;
+      };
+    }
+
+    setIdsServidoresOcultos([]);
+    return () => {
+      cancelado = true;
+    };
+  }, [instances]);
+
+  useEffect(() => {
+    let cancelado = false;
+
+    const verificarStatus = async () => {
+      await Promise.all(
+        servidoresDomeVisiveis.map(async (servidor) => {
+          const destino =
+            servidor.porta && servidor.porta !== 25565
+              ? `${servidor.endereco}:${servidor.porta}`
+              : servidor.endereco;
+
+          try {
+            const resposta = await pingServidorComTimeout(destino);
+            if (cancelado) return;
+
+            setStatusServidores((anterior) => ({
+              ...anterior,
+              [servidor.id]: {
+                online: true,
+                ping: resposta.ping ?? undefined,
+                jogadores: obterContagemJogadores(resposta),
+                motd: resposta.motd ?? undefined,
+                icon: resposta.icon ?? servidor.icone ?? null,
+              },
+            }));
+          } catch {
+            if (cancelado) return;
+
+            setStatusServidores((anterior) => ({
+              ...anterior,
+              [servidor.id]: {
+                online: false,
+                icon: servidor.icone ?? null,
+                erro: "Offline",
+              },
+            }));
+          }
+        })
+      );
+    };
+
+    if (servidoresDomeVisiveis.length === 0) {
+      return () => {
+        cancelado = true;
+      };
+    }
+
+    verificarStatus();
+    const intervaloAtualizacao = window.setInterval(verificarStatus, 30_000);
+
+    return () => {
+      cancelado = true;
+      window.clearInterval(intervaloAtualizacao);
+    };
+  }, [servidoresDomeVisiveis]);
+
+  if (servidoresDomeVisiveis.length === 0) {
+    return null;
+  }
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.08 }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold text-white/50 uppercase tracking-wider">
+          Conheça a Dome Studios
+        </h2>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3">
+        {servidoresDomeVisiveis.map((servidor, i) => {
+          const status = statusServidores[servidor.id];
+          const destino =
+            servidor.porta && servidor.porta !== 25565
+              ? `${servidor.endereco}:${servidor.porta}`
+              : servidor.endereco;
+
+          const statusTexto = !status
+            ? "Verificando"
+            : status.online
+            ? "Online"
+            : "Offline";
+          const statusClasses = !status
+            ? "text-white/60 bg-white/10"
+            : status.online
+            ? "text-emerald-300 bg-emerald-500/15"
+            : "text-red-300 bg-red-500/15";
+
+          return (
+            <motion.div
+              key={servidor.id}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 + i * 0.04 }}
+              className="group relative flex items-center gap-3 rounded-2xl border border-white/8 bg-white/3 px-3 py-3 transition-all hover:bg-white/5 hover:border-white/15"
+            >
+              <div className="w-12 h-12 rounded-lg bg-[#151516] border border-white/10 p-1 overflow-hidden shrink-0">
+                <img
+                  src={status?.icon || servidor.icone || "/dome.svg"}
+                  alt={servidor.nome}
+                  className="w-full h-full object-contain"
+                />
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-sm truncate">{servidor.nome}</h3>
+                  <span
+                    className={cn(
+                      "flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded",
+                      statusClasses
+                    )}
+                  >
+                    {!status ? (
+                      <Loader2 size={9} className="animate-spin" />
+                    ) : status.online ? (
+                      <Wifi size={9} />
+                    ) : (
+                      <WifiOff size={9} />
+                    )}
+                    {statusTexto}
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-white/35 truncate mt-0.5">{destino}</p>
+
+                <div className="flex items-center gap-3 text-[10px] text-white/30 mt-1">
+                  <span className="flex items-center gap-1">
+                    <Users size={9} />
+                    {status?.jogadores || "--/--"}
+                  </span>
+                  <span>{status?.ping != null ? `${status.ping}ms` : "-- ms"}</span>
+                  {instanciaSelecionada ? (
+                    <span className="truncate">Instância: {instanciaSelecionada.name}</span>
+                  ) : (
+                    <span className="text-amber-300/80">Crie uma instância para jogar</span>
+                  )}
+                </div>
+
+                {status?.motd && (
+                  <p className="text-[10px] text-white/35 mt-1 truncate">
+                    {status.motd}
+                  </p>
+                )}
+              </div>
+
+              <button
+                onClick={() => {
+                  if (!user) {
+                    onLogin();
+                    return;
+                  }
+                  if (!instanciaSelecionada) return;
+                  onLaunchServer(instanciaSelecionada.id, destino);
+                }}
+                disabled={Boolean(user) && !instanciaSelecionada}
+                className={cn(
+                  "shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all",
+                  !user || instanciaSelecionada
+                    ? "bg-white/5 hover:bg-emerald-500/20 border-white/5 hover:border-emerald-500/30 text-white/50 hover:text-emerald-400"
+                    : "bg-white/5 border-white/8 text-white/25 cursor-not-allowed"
+                )}
+              >
+                <Play size={12} fill="currentColor" />
+                {!user ? "Login" : instanciaSelecionada ? "Jogar" : "Sem instância"}
+              </button>
+            </motion.div>
+          );
+        })}
+      </div>
+    </motion.section>
   );
 }
 
@@ -348,9 +669,7 @@ function SecaoVolteAJogar({
               : item.servidor.address;
 
           try {
-            const ping = await invoke<ServerInfo>("ping_server", {
-              address: destino,
-            });
+            const ping = await pingServidorComTimeout(destino);
             if (cancelado) return;
 
             setServerStatus((prev) => ({
@@ -542,7 +861,7 @@ function SecaoVolteAJogar({
                     </span>
                     <div className="text-[10px] text-white/25 mt-0.5">
                       Na instância {instance.name}
-                      {status?.ping ? ` • ${status.ping}ms` : ""}
+                      {status?.ping != null ? ` • ${status.ping}ms` : ""}
                     </div>
                   </div>
                 )}

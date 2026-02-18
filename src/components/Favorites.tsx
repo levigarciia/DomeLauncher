@@ -118,7 +118,9 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
           <Heart className="text-pink-500" size={24} />
         </div>
         <div>
-          <h1 className="text-2xl font-bold">Favoritos</h1>
+          <p className="text-xs uppercase tracking-wider text-white/35 font-bold">
+            Sua coleção
+          </p>
           <p className="text-white/40 text-sm">
             Seus mods, modpacks, resource packs e shaders favoritos
           </p>
