@@ -144,6 +144,12 @@ function normalizarHandle(handle: string): string | null {
   return valor;
 }
 
+function normalizarUuid(uuid: string | null | undefined): string | null {
+  if (!uuid) return null;
+  const valor = uuid.trim().toLowerCase();
+  return valor.length > 0 ? valor : null;
+}
+
 function mensagemErro(erro: unknown, padrao: string): string {
   if (erro instanceof Error && erro.message.trim()) return erro.message;
   return padrao;
@@ -227,6 +233,25 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
     const origem = editandoPerfil ? handleEditavel : perfil?.handle ?? '';
     return normalizarHandle(origem) ?? 'sem_handle';
   }, [editandoPerfil, handleEditavel, perfil?.handle]);
+
+  const uuidAvatarMinecraft = useMemo(() => {
+    if (!perfil) return null;
+
+    const contaAtivaUuid = normalizarUuid(usuarioMinecraft?.uuid);
+    if (
+      contaAtivaUuid &&
+      perfil.contasMinecraftVinculadas.some((conta) => normalizarUuid(conta.uuid) === contaAtivaUuid)
+    ) {
+      return contaAtivaUuid;
+    }
+
+    const contaPrincipalUuid = normalizarUuid(perfil.contaMinecraftPrincipalUuid);
+    if (contaPrincipalUuid) {
+      return contaPrincipalUuid;
+    }
+
+    return normalizarUuid(perfil.contasMinecraftVinculadas[0]?.uuid);
+  }, [perfil, usuarioMinecraft?.uuid]);
 
   const amigoSelecionado = useMemo(
     () => (amigoSelecionadoPerfilId ? amigos.find((a) => a.friendProfileId === amigoSelecionadoPerfilId) ?? null : null),
@@ -339,14 +364,43 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
   }, [atualizarSessao]);
 
   useEffect(() => {
+    if (!sessao) return;
+
+    let ativo = true;
+
     const carregar = async () => {
-      const token = await obterTokenValido();
-      if (!token) return;
+      let token = sessao.accessToken;
+
+      if (expirada(sessao.expiraEm)) {
+        try {
+          const resposta = await invoke<RespostaSessaoRefresh>('refresh_launcher_social_session', {
+            apiBaseUrl: API_DOME_LAUNCHER_URL,
+            refreshToken: sessao.refreshToken,
+          });
+
+          const atualizada: SessaoSocial = {
+            ...sessao,
+            accessToken: resposta.accessToken,
+            expiraEm: resposta.expiraEm,
+          };
+
+          atualizarSessao(atualizada);
+          token = atualizada.accessToken;
+        } catch {
+          atualizarSessao(null);
+          return;
+        }
+      }
+
+      if (!ativo || !token) return;
       await Promise.all([carregarPerfilSocial(token), carregarAmigos(token)]);
     };
 
     carregar();
-  }, [carregarAmigos, carregarPerfilSocial, obterTokenValido]);
+    return () => {
+      ativo = false;
+    };
+  }, [atualizarSessao, carregarAmigos, carregarPerfilSocial, sessao?.accessToken, sessao?.expiraEm, sessao?.refreshToken]);
 
   useEffect(() => {
     if (!amigos.length) {
@@ -362,6 +416,81 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
   useEffect(() => {
     carregarChat();
   }, [carregarChat]);
+
+  useEffect(() => {
+    if (!sessao || !perfil || !usuarioMinecraft) return;
+
+    const uuidAtual = normalizarUuid(usuarioMinecraft.uuid);
+    if (!uuidAtual) return;
+
+    const jaVinculada = perfil.contasMinecraftVinculadas.some((conta) => normalizarUuid(conta.uuid) === uuidAtual);
+
+    let ativo = true;
+
+    const sincronizarContaPrincipal = async (token: string) => {
+      if (normalizarUuid(perfil.contaMinecraftPrincipalUuid) === uuidAtual) return;
+
+      try {
+        const dados = await invoke<RespostaSalvarPerfilApi>('save_launcher_social_profile', {
+          apiBaseUrl: API_DOME_LAUNCHER_URL,
+          accessToken: token,
+          payload: {
+            contaMinecraftPrincipalUuid: uuidAtual,
+          },
+        });
+
+        if (!ativo || !dados?.perfil) return;
+        setPerfil(dados.perfil);
+        setSessao((anterior) => {
+          if (!anterior) return anterior;
+          const proxima = { ...anterior, perfil: dados.perfil! };
+          salvarSessaoLocal(proxima);
+          return proxima;
+        });
+      } catch {
+        // Falha silenciosa para nao atrapalhar o social.
+      }
+    };
+
+    const sincronizarVinculoDaContaAtiva = async () => {
+      const token = await obterTokenValido();
+      if (!token || !ativo) return;
+
+      if (jaVinculada) {
+        await sincronizarContaPrincipal(token);
+        return;
+      }
+
+      try {
+        const dados = await invoke<RespostaSalvarPerfilApi>('link_launcher_minecraft_account', {
+          apiBaseUrl: API_DOME_LAUNCHER_URL,
+          accessToken: token,
+          payload: {
+            uuid: usuarioMinecraft.uuid,
+            nome: usuarioMinecraft.name,
+            minecraftAccessToken: usuarioMinecraft.access_token,
+          },
+        });
+
+        if (!ativo || !dados?.perfil) return;
+        setPerfil(dados.perfil);
+        setSessao((anterior) => {
+          if (!anterior) return anterior;
+          const proxima = { ...anterior, perfil: dados.perfil! };
+          salvarSessaoLocal(proxima);
+          return proxima;
+        });
+      } catch {
+        // Vinculo automatico silencioso para nao poluir a UI.
+      }
+    };
+
+    sincronizarVinculoDaContaAtiva();
+
+    return () => {
+      ativo = false;
+    };
+  }, [obterTokenValido, perfil, sessao, usuarioMinecraft]);
 
   const iniciarLoginDiscord = async () => {
     setMensagemPerfil(null);
@@ -387,29 +516,6 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
       await carregarAmigos(novaSessao.accessToken);
     } catch (erro) {
       setErroPerfil(mensagemErro(erro, 'Nao foi possivel autenticar com Discord.'));
-    }
-  };
-
-  const encerrarSessaoSocial = async () => {
-    if (!sessao?.accessToken) {
-      atualizarSessao(null);
-      return;
-    }
-
-    try {
-      await invoke('logout_launcher_social', {
-        apiBaseUrl: API_DOME_LAUNCHER_URL,
-        accessToken: sessao.accessToken,
-      });
-    } catch {
-      // Ignora erro de rede no logout
-    } finally {
-      atualizarSessao(null);
-      setAmigos([]);
-      setPendentesRecebidas([]);
-      setPendentesEnviadas([]);
-      setMensagensChat([]);
-      setAmigoSelecionadoPerfilId(null);
     }
   };
 
@@ -457,68 +563,6 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
       setErroPerfil(msg.toLowerCase().includes('handle ja esta em uso') ? 'Handle ja esta em uso. Escolha outro.' : msg);
     } finally {
       setSalvandoPerfil(false);
-    }
-  };
-
-  const vincularContaMinecraftAtual = async () => {
-    const token = await obterTokenValido();
-    if (!token || !usuarioMinecraft) {
-      setErroPerfil('Entre com uma conta Minecraft no launcher para vincular.');
-      return;
-    }
-
-    setErroPerfil(null);
-    setMensagemPerfil(null);
-
-    try {
-      const dados = await invoke<RespostaSalvarPerfilApi>('link_launcher_minecraft_account', {
-        apiBaseUrl: API_DOME_LAUNCHER_URL,
-        accessToken: token,
-        payload: {
-          uuid: usuarioMinecraft.uuid,
-          nome: usuarioMinecraft.name,
-          minecraftAccessToken: usuarioMinecraft.access_token,
-        },
-      });
-
-      if (dados?.perfil) {
-        setPerfil(dados.perfil);
-        setSessao((anterior) => {
-          if (!anterior) return anterior;
-          const proxima = { ...anterior, perfil: dados.perfil! };
-          salvarSessaoLocal(proxima);
-          return proxima;
-        });
-      }
-
-      setMensagemPerfil(`Conta Minecraft ${usuarioMinecraft.name} vinculada.`);
-    } catch (erro) {
-      setErroPerfil(mensagemErro(erro, 'Nao foi possivel vincular conta Minecraft.'));
-    }
-  };
-
-  const desvincularContaMinecraft = async (uuid: string) => {
-    const token = await obterTokenValido();
-    if (!token) return;
-
-    try {
-      const dados = await invoke<RespostaSalvarPerfilApi>('unlink_launcher_minecraft_account', {
-        apiBaseUrl: API_DOME_LAUNCHER_URL,
-        accessToken: token,
-        uuid,
-      });
-
-      if (dados?.perfil) {
-        setPerfil(dados.perfil);
-        setSessao((anterior) => {
-          if (!anterior) return anterior;
-          const proxima = { ...anterior, perfil: dados.perfil! };
-          salvarSessaoLocal(proxima);
-          return proxima;
-        });
-      }
-    } catch (erro) {
-      setErroPerfil(mensagemErro(erro, 'Nao foi possivel desvincular conta Minecraft.'));
     }
   };
 
@@ -635,7 +679,13 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
           {sessao && perfil && (
             <div className="space-y-2">
               <div className="group flex items-center gap-2 px-1">
-                {perfil.discordAvatar ? (
+                {uuidAvatarMinecraft ? (
+                  <img
+                    src={`https://mc-heads.net/head/${uuidAvatarMinecraft}/64`}
+                    alt={nomeExibicaoAtual}
+                    className="h-8 w-8 border border-white/15 bg-[#202020] object-cover"
+                  />
+                ) : perfil.discordAvatar ? (
                   <img
                     src={`https://cdn.discordapp.com/avatars/${perfil.discordId}/${perfil.discordAvatar}.png?size=64`}
                     alt={nomeExibicaoAtual}
@@ -700,50 +750,6 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
                 </div>
               )}
 
-              <div className="px-1">
-                <button
-                  onClick={encerrarSessaoSocial}
-                  className="w-full border border-red-400/30 bg-red-500/10 px-2 py-1.5 text-[11px] font-bold uppercase tracking-wide text-red-200 hover:text-red-100"
-                >
-                  Sair do social
-                </button>
-              </div>
-
-              <div className="mx-1 border border-white/10 bg-[#111111] p-2">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Contas Minecraft vinculadas</p>
-                  {usuarioMinecraft && (
-                    <button
-                      onClick={vincularContaMinecraftAtual}
-                      className="border border-white/20 bg-[#1d1d1d] px-1.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white/80 hover:text-white"
-                    >
-                      Vincular atual
-                    </button>
-                  )}
-                </div>
-                {perfil.contasMinecraftVinculadas.length === 0 && (
-                  <p className="text-[11px] text-white/45">Nenhuma conta vinculada.</p>
-                )}
-                <div className="space-y-1">
-                  {perfil.contasMinecraftVinculadas.map((conta) => (
-                    <div key={conta.uuid} className="flex items-center justify-between gap-2 border border-white/10 bg-[#151515] px-2 py-1.5">
-                      <p className="truncate text-[11px] text-white/85">{conta.nome}</p>
-                      <div className="flex items-center gap-1">
-                        {perfil.contaMinecraftPrincipalUuid === conta.uuid && (
-                          <span className="text-[10px] text-emerald-300">Principal</span>
-                        )}
-                        <button
-                          onClick={() => desvincularContaMinecraft(conta.uuid)}
-                          className="border border-white/20 bg-[#222] px-1.5 py-1 text-[10px] text-white/80 hover:text-white"
-                        >
-                          Remover
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
               {erroPerfil && <p className="px-1 text-[11px] text-red-300/90">{erroPerfil}</p>}
               {!erroPerfil && mensagemPerfil && <p className="px-1 text-[11px] text-emerald-300/90">{mensagemPerfil}</p>}
             </div>
@@ -770,7 +776,7 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
                   value={handleNovoAmigo}
                   onChange={(e) => setHandleNovoAmigo(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && enviarSolicitacaoPorHandle()}
-                  placeholder="Adicionar por @handle"
+                  placeholder="Buscar amigos..."
                   className="min-w-0 flex-1 border border-white/15 bg-[#161616] px-2 py-1.5 text-xs text-white outline-none focus:border-emerald-400/45"
                 />
                 <button

@@ -4,8 +4,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+use tokio::time::{timeout, Duration};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -94,14 +94,6 @@ pub async fn login_discord_social(
     let code_verifier = gerar_code_verifier();
     let code_challenge = gerar_code_challenge(&code_verifier);
 
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .map_err(|e| format!("Falha ao iniciar callback local: {}", e))?;
-    let porta = listener
-        .local_addr()
-        .map_err(|e| format!("Falha ao descobrir porta local: {}", e))?
-        .port();
-
     let estado = uuid::Uuid::new_v4().to_string();
     let mut url = url::Url::parse("https://discord.com/oauth2/authorize")
         .map_err(|e| format!("Falha ao montar URL OAuth: {}", e))?;
@@ -116,65 +108,44 @@ pub async fn login_discord_social(
         .append_pair("code_challenge", &code_challenge)
         .append_pair("code_challenge_method", "S256");
 
-    let script = format!(
-        r#"
-        (function() {{
-            const check = setInterval(() => {{
-                const href = window.location.href;
-                if (href.includes("code=") || href.includes("error=")) {{
-                    clearInterval(check);
-                    window.location.href = "http://127.0.0.1:{}/callback?final_url=" + encodeURIComponent(href);
-                }}
-            }}, 400);
-        }})();
-        "#,
-        porta
-    );
+    let (tx_callback, rx_callback) = oneshot::channel::<String>();
+    let tx_callback = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_callback)));
 
     let label = "discord-social-auth-window";
     if let Some(janela_existente) = app.get_webview_window(label) {
         let _ = janela_existente.close();
     }
 
+    let tx_callback_janela = std::sync::Arc::clone(&tx_callback);
     let _janela = WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url))
         .title("Entrar com Discord")
         .inner_size(500.0, 650.0)
-        .initialization_script(&script)
+        .on_navigation(move |url| {
+            let possui_codigo = url.query_pairs().any(|(chave, _)| chave == "code");
+            let possui_erro = url.query_pairs().any(|(chave, _)| chave == "error");
+            if !possui_codigo && !possui_erro {
+                return true;
+            }
+
+            if let Ok(mut sender_guard) = tx_callback_janela.lock() {
+                if let Some(sender) = sender_guard.take() {
+                    let _ = sender.send(url.to_string());
+                }
+            }
+
+            false
+        })
         .build()
         .map_err(|e| format!("Falha ao abrir janela de autenticacao: {}", e))?;
 
-    let (mut stream, _) = listener
-        .accept()
+    let final_url = timeout(Duration::from_secs(180), rx_callback)
         .await
-        .map_err(|e| format!("Falha ao receber callback OAuth: {}", e))?;
-
-    let mut reader = BufReader::new(&mut stream);
-    let mut request_line = String::new();
-    reader
-        .read_line(&mut request_line)
-        .await
-        .map_err(|e| format!("Falha ao ler callback OAuth: {}", e))?;
-
-    let resposta_html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body style='font-family:sans-serif;background:#0d0d0d;color:white;display:flex;align-items:center;justify-content:center;height:100vh'><div><h2>Discord conectado</h2><p>Voce ja pode voltar para o launcher.</p><script>setTimeout(()=>window.close(), 1200)</script></div></body></html>";
-    let _ = stream.write_all(resposta_html.as_bytes()).await;
+        .map_err(|_| "Tempo limite no login Discord. Tente novamente.".to_string())?
+        .map_err(|_| "Fluxo OAuth encerrado antes do callback.".to_string())?;
 
     if let Some(janela) = app.get_webview_window(label) {
         let _ = janela.close();
     }
-
-    let caminho_requisicao = request_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or("Callback OAuth invalido".to_string())?;
-
-    let final_url_codificada = caminho_requisicao
-        .split("final_url=")
-        .nth(1)
-        .ok_or("Resposta OAuth sem URL final".to_string())?;
-
-    let final_url = urlencoding::decode(final_url_codificada)
-        .map_err(|_| "Falha ao decodificar retorno OAuth".to_string())?
-        .to_string();
 
     let final_url = url::Url::parse(&final_url).map_err(|_| "URL final OAuth invalida".to_string())?;
     let query_params: std::collections::HashMap<String, String> =
