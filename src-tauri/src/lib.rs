@@ -38,19 +38,31 @@ struct NoticiaMinecraft {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct AmigoLauncherApi {
-    pub uuid: String,
+    pub amizade_id: String,
+    pub friend_profile_id: String,
     pub nome: String,
     pub handle: Option<String>,
     pub online: bool,
-    pub ultimo_login: Option<String>,
+    pub ultimo_seen_em: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct SolicitacaoAmizadeApi {
+struct SolicitacaoRecebidaAmizadeApi {
     pub id: String,
-    pub de_uuid: String,
+    pub de_perfil_id: String,
+    pub de_handle: Option<String>,
     pub de_nome: String,
+    pub criado_em: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SolicitacaoEnviadaAmizadeApi {
+    pub id: String,
+    pub para_perfil_id: String,
+    pub para_handle: Option<String>,
+    pub para_nome: String,
     pub criado_em: String,
 }
 
@@ -59,37 +71,45 @@ struct RespostaAmigosLauncherApi {
     #[serde(default)]
     pub amigos: Vec<AmigoLauncherApi>,
     #[serde(default)]
-    pub pendentes: Vec<SolicitacaoAmizadeApi>,
+    pub pendentes_recebidas: Vec<SolicitacaoRecebidaAmizadeApi>,
+    #[serde(default)]
+    pub pendentes_enviadas: Vec<SolicitacaoEnviadaAmizadeApi>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct PerfilDiscordSocialLauncherApi {
-    pub id: Option<String>,
-    pub username: Option<String>,
-    pub global_name: Option<String>,
-    pub avatar: Option<String>,
+struct ContaMinecraftSocialLauncherApi {
+    pub uuid: String,
+    pub nome: String,
+    pub vinculado_em: String,
+    pub ultimo_uso_em: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PerfilSocialLauncherApi {
-    pub uuid: String,
-    pub nome_social: Option<String>,
-    pub handle: Option<String>,
-    pub discord: Option<PerfilDiscordSocialLauncherApi>,
+    pub perfil_id: String,
+    pub discord_id: String,
+    pub discord_username: String,
+    pub discord_global_name: Option<String>,
+    pub discord_avatar: Option<String>,
+    pub handle: String,
+    pub nome_social: String,
+    #[serde(default)]
+    pub contas_minecraft_vinculadas: Vec<ContaMinecraftSocialLauncherApi>,
+    pub conta_minecraft_principal_uuid: Option<String>,
+    pub online: bool,
+    pub ultimo_seen_em: Option<String>,
+    pub criado_em: String,
+    pub atualizado_em: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PayloadSalvarPerfilSocialLauncherApi {
-    pub uuid: String,
-    pub nome_social: String,
+    pub nome_social: Option<String>,
     pub handle: Option<String>,
-    pub discord_id: Option<String>,
-    pub discord_username: Option<String>,
-    pub discord_global_name: Option<String>,
-    pub discord_avatar: Option<String>,
+    pub conta_minecraft_principal_uuid: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -102,7 +122,6 @@ struct RespostaSalvarPerfilSocialLauncherApi {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PayloadSolicitarAmizadeHandleLauncherApi {
-    pub solicitante_uuid: String,
     pub handle: String,
 }
 
@@ -110,8 +129,8 @@ struct PayloadSolicitarAmizadeHandleLauncherApi {
 #[serde(rename_all = "camelCase")]
 struct MensagemChatLauncherApi {
     pub id: String,
-    pub de_uuid: String,
-    pub para_uuid: String,
+    pub de_perfil_id: String,
+    pub para_perfil_id: String,
     pub conteudo: String,
     pub criado_em: String,
 }
@@ -127,9 +146,16 @@ struct RespostaMensagensChatLauncherApi {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct PayloadEnviarMensagemChatLauncherApi {
-    pub de_uuid: String,
-    pub para_uuid: String,
+    pub para_perfil_id: String,
     pub conteudo: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PayloadVincularMinecraftSocialLauncherApi {
+    pub uuid: String,
+    pub nome: String,
+    pub minecraft_access_token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -185,43 +211,26 @@ async fn extrair_mensagem_erro_launcher(resposta: reqwest::Response, contexto: &
 #[tauri::command]
 async fn get_launcher_friends(
     api_base_url: String,
-    uuid: String,
+    access_token: String,
 ) -> Result<RespostaAmigosLauncherApi, String> {
     let api_base = normalizar_api_base_url(&api_base_url)?;
-
-    let uuid_normalizado = uuid.trim().to_lowercase();
-    if uuid_normalizado.len() < 3 {
-        return Err("UUID inválido para consulta de amigos.".to_string());
-    }
-
-    let endpoint = format!(
-        "{}/api/launcher/friends/{}",
-        api_base,
-        urlencoding::encode(&uuid_normalizado)
-    );
+    let token = normalizar_token_social(&access_token)?;
+    let endpoint = format!("{}/api/launcher/friends", api_base);
 
     let client = criar_cliente_http_launcher()?;
-
     let resposta = client
         .get(&endpoint)
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("Erro de rede ao buscar amigos: {}", e))?;
 
-    let status = resposta.status();
-    if !status.is_success() {
-        let corpo = resposta.text().await.unwrap_or_default();
-        let detalhe = if corpo.is_empty() {
-            String::new()
-        } else {
-            let trecho: String = corpo.chars().take(200).collect();
-            format!(" - {}", trecho)
-        };
-        return Err(format!(
-            "Falha ao buscar amigos (HTTP {}{})",
-            status.as_u16(),
-            detalhe
-        ));
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha ao buscar amigos.",
+        )
+        .await);
     }
 
     resposta
@@ -233,23 +242,16 @@ async fn get_launcher_friends(
 #[tauri::command]
 async fn get_launcher_social_profile(
     api_base_url: String,
-    uuid: String,
+    access_token: String,
 ) -> Result<PerfilSocialLauncherApi, String> {
     let api_base = normalizar_api_base_url(&api_base_url)?;
-    let uuid_normalizado = uuid.trim().to_lowercase();
-    if uuid_normalizado.len() < 3 {
-        return Err("UUID inválido para perfil social.".to_string());
-    }
-
-    let endpoint = format!(
-        "{}/api/launcher/social/profile/{}",
-        api_base,
-        urlencoding::encode(&uuid_normalizado)
-    );
+    let token = normalizar_token_social(&access_token)?;
+    let endpoint = format!("{}/api/launcher/social/profile/me", api_base);
 
     let client = criar_cliente_http_launcher()?;
     let resposta = client
         .get(&endpoint)
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("Erro de rede ao buscar perfil social: {}", e))?;
@@ -262,31 +264,32 @@ async fn get_launcher_social_profile(
         .await);
     }
 
-    resposta
-        .json::<PerfilSocialLauncherApi>()
+    let dados = resposta
+        .json::<serde_json::Value>()
         .await
-        .map_err(|e| format!("Resposta inválida da API de perfil social: {}", e))
+        .map_err(|e| format!("Resposta inválida da API de perfil social: {}", e))?;
+
+    serde_json::from_value::<PerfilSocialLauncherApi>(
+        dados.get("perfil").cloned().unwrap_or(serde_json::Value::Null),
+    )
+    .map_err(|e| format!("Resposta sem perfil social válido: {}", e))
 }
 
 #[tauri::command]
 async fn save_launcher_social_profile(
     api_base_url: String,
+    access_token: String,
     payload: PayloadSalvarPerfilSocialLauncherApi,
 ) -> Result<RespostaSalvarPerfilSocialLauncherApi, String> {
     let api_base = normalizar_api_base_url(&api_base_url)?;
-    let uuid_normalizado = payload.uuid.trim().to_lowercase();
-    if uuid_normalizado.len() < 3 {
-        return Err("UUID inválido para salvar perfil social.".to_string());
-    }
-
-    let endpoint = format!("{}/api/launcher/social/profile", api_base);
+    let token = normalizar_token_social(&access_token)?;
+    let endpoint = format!("{}/api/launcher/social/profile/me", api_base);
     let client = criar_cliente_http_launcher()?;
-    let mut corpo = payload.clone();
-    corpo.uuid = uuid_normalizado;
 
     let resposta = client
-        .post(&endpoint)
-        .json(&corpo)
+        .patch(&endpoint)
+        .bearer_auth(token)
+        .json(&payload)
         .send()
         .await
         .map_err(|e| format!("Erro de rede ao salvar perfil social: {}", e))?;
@@ -308,14 +311,11 @@ async fn save_launcher_social_profile(
 #[tauri::command]
 async fn send_launcher_friend_request_by_handle(
     api_base_url: String,
+    access_token: String,
     payload: PayloadSolicitarAmizadeHandleLauncherApi,
 ) -> Result<(), String> {
     let api_base = normalizar_api_base_url(&api_base_url)?;
-    let solicitante_uuid = payload.solicitante_uuid.trim().to_lowercase();
-    if solicitante_uuid.len() < 3 {
-        return Err("UUID inválido para solicitação de amizade.".to_string());
-    }
-
+    let token = normalizar_token_social(&access_token)?;
     if payload.handle.trim().is_empty() {
         return Err("Handle inválido para solicitação de amizade.".to_string());
     }
@@ -323,12 +323,12 @@ async fn send_launcher_friend_request_by_handle(
     let endpoint = format!("{}/api/launcher/friends/request-by-handle", api_base);
     let client = criar_cliente_http_launcher()?;
     let corpo = PayloadSolicitarAmizadeHandleLauncherApi {
-        solicitante_uuid,
         handle: payload.handle.trim().to_string(),
     };
 
     let resposta = client
         .post(&endpoint)
+        .bearer_auth(token)
         .json(&corpo)
         .send()
         .await
@@ -348,34 +348,29 @@ async fn send_launcher_friend_request_by_handle(
 #[tauri::command]
 async fn get_launcher_chat_messages(
     api_base_url: String,
-    uuid: String,
-    amigo_uuid: String,
+    access_token: String,
+    friend_profile_id: String,
     limite: Option<u32>,
 ) -> Result<RespostaMensagensChatLauncherApi, String> {
     let api_base = normalizar_api_base_url(&api_base_url)?;
-
-    let uuid_normalizado = uuid.trim().to_lowercase();
-    if uuid_normalizado.len() < 3 {
-        return Err("UUID inválido para buscar mensagens do chat.".to_string());
-    }
-
-    let amigo_uuid_normalizado = amigo_uuid.trim().to_lowercase();
-    if amigo_uuid_normalizado.len() < 3 {
-        return Err("UUID do amigo inválido para buscar mensagens do chat.".to_string());
+    let token = normalizar_token_social(&access_token)?;
+    let friend_profile_id = friend_profile_id.trim().to_string();
+    if friend_profile_id.is_empty() {
+        return Err("friendProfileId inválido para buscar mensagens do chat.".to_string());
     }
 
     let limite_ajustado = limite.unwrap_or(60).clamp(1, 120);
     let endpoint = format!(
-        "{}/api/launcher/chat/{}/{}?limite={}",
+        "{}/api/launcher/chat/{}?limite={}",
         api_base,
-        urlencoding::encode(&uuid_normalizado),
-        urlencoding::encode(&amigo_uuid_normalizado),
+        urlencoding::encode(&friend_profile_id),
         limite_ajustado
     );
 
     let client = criar_cliente_http_launcher()?;
     let resposta = client
         .get(&endpoint)
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("Erro de rede ao buscar mensagens do chat: {}", e))?;
@@ -397,17 +392,15 @@ async fn get_launcher_chat_messages(
 #[tauri::command]
 async fn send_launcher_chat_message(
     api_base_url: String,
+    access_token: String,
     payload: PayloadEnviarMensagemChatLauncherApi,
 ) -> Result<MensagemChatLauncherApi, String> {
     let api_base = normalizar_api_base_url(&api_base_url)?;
-    let de_uuid = payload.de_uuid.trim().to_lowercase();
-    if de_uuid.len() < 3 {
-        return Err("UUID do remetente inválido para envio da mensagem.".to_string());
-    }
+    let token = normalizar_token_social(&access_token)?;
 
-    let para_uuid = payload.para_uuid.trim().to_lowercase();
-    if para_uuid.len() < 3 {
-        return Err("UUID do destinatário inválido para envio da mensagem.".to_string());
+    let para_perfil_id = payload.para_perfil_id.trim().to_string();
+    if para_perfil_id.is_empty() {
+        return Err("Perfil do destinatario inválido para envio da mensagem.".to_string());
     }
 
     let conteudo = payload.conteudo.trim().to_string();
@@ -422,13 +415,13 @@ async fn send_launcher_chat_message(
     let endpoint = format!("{}/api/launcher/chat/send", api_base);
     let client = criar_cliente_http_launcher()?;
     let corpo = PayloadEnviarMensagemChatLauncherApi {
-        de_uuid,
-        para_uuid,
+        para_perfil_id,
         conteudo,
     };
 
     let resposta = client
         .post(&endpoint)
+        .bearer_auth(token)
         .json(&corpo)
         .send()
         .await
@@ -451,6 +444,233 @@ async fn send_launcher_chat_message(
         dados.get("mensagem").cloned().unwrap_or(serde_json::Value::Null),
     )
     .map_err(|e| format!("Resposta sem mensagem válida no chat: {}", e))
+}
+
+#[tauri::command]
+async fn respond_launcher_friend_request(
+    api_base_url: String,
+    access_token: String,
+    request_id: String,
+    acao: String,
+) -> Result<(), String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() {
+        return Err("ID da solicitacao invalido.".to_string());
+    }
+
+    let acao_normalizada = acao.trim().to_lowercase();
+    let endpoint = match acao_normalizada.as_str() {
+        "accept" | "aceitar" => format!("{}/api/launcher/friends/request/{}/accept", api_base, urlencoding::encode(&request_id)),
+        "reject" | "recusar" => format!("{}/api/launcher/friends/request/{}/reject", api_base, urlencoding::encode(&request_id)),
+        _ => return Err("Ação inválida. Use accept/reject.".to_string())
+    };
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .post(&endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao responder solicitacao: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Nao foi possivel responder solicitacao.",
+        )
+        .await);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_launcher_friend(
+    api_base_url: String,
+    access_token: String,
+    friend_profile_id: String,
+) -> Result<(), String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let friend_profile_id = friend_profile_id.trim().to_string();
+    if friend_profile_id.is_empty() {
+        return Err("friendProfileId inválido.".to_string());
+    }
+
+    let endpoint = format!(
+        "{}/api/launcher/friends/{}",
+        api_base,
+        urlencoding::encode(&friend_profile_id)
+    );
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .delete(&endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao remover amizade: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Nao foi possivel remover amizade.",
+        )
+        .await);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn link_launcher_minecraft_account(
+    api_base_url: String,
+    access_token: String,
+    payload: PayloadVincularMinecraftSocialLauncherApi,
+) -> Result<RespostaSalvarPerfilSocialLauncherApi, String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let endpoint = format!("{}/api/launcher/social/minecraft/link", api_base);
+
+    if payload.minecraft_access_token.trim().is_empty() {
+        return Err("minecraftAccessToken obrigatório para vincular conta.".to_string());
+    }
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .post(&endpoint)
+        .bearer_auth(token)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao vincular conta Minecraft: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha ao vincular conta Minecraft.",
+        )
+        .await);
+    }
+
+    resposta
+        .json::<RespostaSalvarPerfilSocialLauncherApi>()
+        .await
+        .map_err(|e| format!("Resposta inválida ao vincular conta Minecraft: {}", e))
+}
+
+#[tauri::command]
+async fn unlink_launcher_minecraft_account(
+    api_base_url: String,
+    access_token: String,
+    uuid: String,
+) -> Result<RespostaSalvarPerfilSocialLauncherApi, String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let uuid = uuid.trim().to_lowercase();
+    if uuid.is_empty() {
+        return Err("UUID inválido para desvincular conta.".to_string());
+    }
+
+    let endpoint = format!(
+        "{}/api/launcher/social/minecraft/{}",
+        api_base,
+        urlencoding::encode(&uuid)
+    );
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .delete(&endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao desvincular conta Minecraft: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha ao desvincular conta Minecraft.",
+        )
+        .await);
+    }
+
+    resposta
+        .json::<RespostaSalvarPerfilSocialLauncherApi>()
+        .await
+        .map_err(|e| format!("Resposta inválida ao desvincular conta Minecraft: {}", e))
+}
+
+#[tauri::command]
+async fn refresh_launcher_social_session(
+    api_base_url: String,
+    refresh_token: String,
+) -> Result<serde_json::Value, String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let refresh_token = refresh_token.trim().to_string();
+    if refresh_token.is_empty() {
+        return Err("refreshToken ausente.".to_string());
+    }
+
+    let endpoint = format!("{}/api/launcher/auth/refresh", api_base);
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .post(&endpoint)
+        .json(&serde_json::json!({ "refreshToken": refresh_token }))
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao renovar sessao social: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha ao renovar sessao social.",
+        )
+        .await);
+    }
+
+    resposta
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Resposta inválida ao renovar sessao social: {}", e))
+}
+
+#[tauri::command]
+async fn logout_launcher_social(
+    api_base_url: String,
+    access_token: String,
+) -> Result<(), String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let endpoint = format!("{}/api/launcher/auth/logout", api_base);
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .post(&endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao encerrar sessao social: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha ao encerrar sessao social.",
+        )
+        .await);
+    }
+
+    Ok(())
+}
+
+fn normalizar_token_social(access_token: &str) -> Result<String, String> {
+    let token = access_token.trim().to_string();
+    if token.is_empty() {
+        return Err("Token social ausente.".to_string());
+    }
+
+    Ok(token)
 }
 
 fn obter_chave_api_curseforge() -> Option<String> {
@@ -5456,8 +5676,14 @@ pub fn run() {
             get_launcher_social_profile,
             save_launcher_social_profile,
             send_launcher_friend_request_by_handle,
+            respond_launcher_friend_request,
+            remove_launcher_friend,
             get_launcher_chat_messages,
             send_launcher_chat_message,
+            link_launcher_minecraft_account,
+            unlink_launcher_minecraft_account,
+            refresh_launcher_social_session,
+            logout_launcher_social,
             // Gerenciamento de Java e configurações
             get_settings,
             save_settings,

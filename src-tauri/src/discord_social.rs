@@ -1,53 +1,98 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct PerfilDiscordSocial {
-    pub id: String,
-    pub username: String,
-    pub global_name: Option<String>,
-    pub avatar: Option<String>,
+pub struct ContaMinecraftSocial {
+    pub uuid: String,
+    pub nome: String,
+    pub vinculado_em: String,
+    pub ultimo_uso_em: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PerfilSocialDiscord {
+    pub perfil_id: String,
+    pub discord_id: String,
+    pub discord_username: String,
+    pub discord_global_name: Option<String>,
+    pub discord_avatar: Option<String>,
     pub handle: String,
+    pub nome_social: String,
+    pub contas_minecraft_vinculadas: Vec<ContaMinecraftSocial>,
+    pub conta_minecraft_principal_uuid: Option<String>,
+    pub online: bool,
+    pub ultimo_seen_em: Option<String>,
+    pub criado_em: String,
+    pub atualizado_em: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct RespostaTokenDiscord {
-    access_token: String,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SessaoSocialDiscord {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expira_em: String,
+    pub perfil: PerfilSocialDiscord,
 }
 
-#[derive(Debug, Deserialize)]
-struct RespostaUsuarioDiscord {
-    id: String,
-    username: String,
-    global_name: Option<String>,
-    avatar: Option<String>,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BodyExchangeDiscord {
+    code: String,
+    code_verifier: String,
+    redirect_uri: String,
 }
 
-fn normalizar_handle_discord(username: &str) -> String {
-    username.trim().to_lowercase()
+fn normalizar_api_base_url(api_base_url: &str) -> Result<String, String> {
+    let api_base = api_base_url.trim().trim_end_matches('/').to_string();
+    if api_base.is_empty() {
+        return Err("URL da API do launcher nao configurada.".to_string());
+    }
+    if !api_base.starts_with("http://") && !api_base.starts_with("https://") {
+        return Err("URL da API do launcher invalida.".to_string());
+    }
+    Ok(api_base)
+}
+
+fn gerar_code_verifier() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn gerar_code_challenge(code_verifier: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(hasher.finalize())
 }
 
 #[tauri::command]
 pub async fn login_discord_social(
     app: AppHandle,
+    api_base_url: String,
     client_id: String,
-    client_secret: String,
     redirect_uri: String,
     scope: Option<String>,
-) -> Result<PerfilDiscordSocial, String> {
+) -> Result<SessaoSocialDiscord, String> {
+    let api_base_url = normalizar_api_base_url(&api_base_url)?;
     let client_id = client_id.trim().to_string();
-    let client_secret = client_secret.trim().to_string();
     let redirect_uri = redirect_uri.trim().to_string();
-    let scope = scope.unwrap_or_else(|| "identify".to_string());
-    let scope = scope.trim().to_string();
+    let scope = scope.unwrap_or_else(|| "identify".to_string()).trim().to_string();
 
-    if client_id.is_empty() || client_secret.is_empty() || redirect_uri.is_empty() {
-        return Err("Credenciais Discord incompletas para autenticação social.".to_string());
+    if client_id.is_empty() || redirect_uri.is_empty() {
+        return Err("Parametros Discord incompletos para autenticacao social.".to_string());
     }
+
+    let code_verifier = gerar_code_verifier();
+    let code_challenge = gerar_code_challenge(&code_verifier);
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -60,13 +105,16 @@ pub async fn login_discord_social(
     let estado = uuid::Uuid::new_v4().to_string();
     let mut url = url::Url::parse("https://discord.com/oauth2/authorize")
         .map_err(|e| format!("Falha ao montar URL OAuth: {}", e))?;
+
     url.query_pairs_mut()
         .append_pair("client_id", &client_id)
         .append_pair("response_type", "code")
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("scope", &scope)
         .append_pair("prompt", "consent")
-        .append_pair("state", &estado);
+        .append_pair("state", &estado)
+        .append_pair("code_challenge", &code_challenge)
+        .append_pair("code_challenge_method", "S256");
 
     let script = format!(
         r#"
@@ -93,7 +141,7 @@ pub async fn login_discord_social(
         .inner_size(500.0, 650.0)
         .initialization_script(&script)
         .build()
-        .map_err(|e| format!("Falha ao abrir janela de autenticação: {}", e))?;
+        .map_err(|e| format!("Falha ao abrir janela de autenticacao: {}", e))?;
 
     let (mut stream, _) = listener
         .accept()
@@ -107,7 +155,7 @@ pub async fn login_discord_social(
         .await
         .map_err(|e| format!("Falha ao ler callback OAuth: {}", e))?;
 
-    let resposta_html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body style='font-family:sans-serif;background:#0d0d0d;color:white;display:flex;align-items:center;justify-content:center;height:100vh'><div><h2>Discord conectado</h2><p>Você já pode voltar para o launcher.</p><script>setTimeout(()=>window.close(), 1200)</script></div></body></html>";
+    let resposta_html = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body style='font-family:sans-serif;background:#0d0d0d;color:white;display:flex;align-items:center;justify-content:center;height:100vh'><div><h2>Discord conectado</h2><p>Voce ja pode voltar para o launcher.</p><script>setTimeout(()=>window.close(), 1200)</script></div></body></html>";
     let _ = stream.write_all(resposta_html.as_bytes()).await;
 
     if let Some(janela) = app.get_webview_window(label) {
@@ -117,7 +165,7 @@ pub async fn login_discord_social(
     let caminho_requisicao = request_line
         .split_whitespace()
         .nth(1)
-        .ok_or("Callback OAuth inválido".to_string())?;
+        .ok_or("Callback OAuth invalido".to_string())?;
 
     let final_url_codificada = caminho_requisicao
         .split("final_url=")
@@ -128,7 +176,7 @@ pub async fn login_discord_social(
         .map_err(|_| "Falha ao decodificar retorno OAuth".to_string())?
         .to_string();
 
-    let final_url = url::Url::parse(&final_url).map_err(|_| "URL final OAuth inválida".to_string())?;
+    let final_url = url::Url::parse(&final_url).map_err(|_| "URL final OAuth invalida".to_string())?;
     let query_params: std::collections::HashMap<String, String> =
         final_url.query_pairs().into_owned().collect();
 
@@ -140,60 +188,36 @@ pub async fn login_discord_social(
         .get("state")
         .ok_or("Estado OAuth ausente".to_string())?;
     if estado_retorno != &estado {
-        return Err("Estado OAuth inválido. Tente novamente.".to_string());
+        return Err("Estado OAuth invalido. Tente novamente.".to_string());
     }
 
-    let codigo = query_params
+    let code = query_params
         .get("code")
-        .ok_or("Código OAuth não encontrado no retorno.".to_string())?
+        .ok_or("Codigo OAuth nao encontrado no retorno.".to_string())?
         .to_string();
 
+    let body = BodyExchangeDiscord {
+        code,
+        code_verifier,
+        redirect_uri,
+    };
+
+    let endpoint = format!("{}/api/launcher/auth/discord/exchange", api_base_url);
     let client = Client::new();
-    let resposta_token = client
-        .post("https://discord.com/api/v10/oauth2/token")
-        .form(&[
-            ("client_id", client_id.as_str()),
-            ("client_secret", client_secret.as_str()),
-            ("grant_type", "authorization_code"),
-            ("code", codigo.as_str()),
-            ("redirect_uri", redirect_uri.as_str()),
-        ])
+    let resposta = client
+        .post(&endpoint)
+        .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Falha ao obter token Discord: {}", e))?;
+        .map_err(|e| format!("Falha ao autenticar com API social: {}", e))?;
 
-    if !resposta_token.status().is_success() {
-        let texto = resposta_token.text().await.unwrap_or_default();
-        return Err(format!("Discord token inválido: {}", texto));
+    if !resposta.status().is_success() {
+        let texto = resposta.text().await.unwrap_or_default();
+        return Err(format!("API social retornou erro: {}", texto));
     }
 
-    let token: RespostaTokenDiscord = resposta_token
-        .json()
+    resposta
+        .json::<SessaoSocialDiscord>()
         .await
-        .map_err(|e| format!("Resposta token Discord inválida: {}", e))?;
-
-    let resposta_usuario = client
-        .get("https://discord.com/api/v10/users/@me")
-        .header("Authorization", format!("Bearer {}", token.access_token))
-        .send()
-        .await
-        .map_err(|e| format!("Falha ao obter perfil Discord: {}", e))?;
-
-    if !resposta_usuario.status().is_success() {
-        let texto = resposta_usuario.text().await.unwrap_or_default();
-        return Err(format!("Discord perfil inválido: {}", texto));
-    }
-
-    let usuario: RespostaUsuarioDiscord = resposta_usuario
-        .json()
-        .await
-        .map_err(|e| format!("Resposta de perfil Discord inválida: {}", e))?;
-
-    Ok(PerfilDiscordSocial {
-        id: usuario.id,
-        username: usuario.username.clone(),
-        global_name: usuario.global_name,
-        avatar: usuario.avatar,
-        handle: normalizar_handle_discord(&usuario.username),
-    })
+        .map_err(|e| format!("Resposta da API social invalida: {}", e))
 }
