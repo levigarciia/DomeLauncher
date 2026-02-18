@@ -1,0 +1,179 @@
+@import url("https://fonts.cdnfonts.com/css/minecraftia");
+@import "tailwindcss";
+
+@font-face {
+  font-family: "MinecraftSeven";
+  src: local("Minecraft Seven"), local("MinecraftSeven"), local("Mojangles");
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MinecraftTen";
+  src: local("Minecraft Ten"), local("MinecraftTen");
+  font-display: swap;
+}
+
+:root {
+  --mc-fundo: #0a0a0a;
+  --mc-superficie: #141414;
+  --mc-cartao: #1b1b1b;
+  --mc-borda: #2f2f2f;
+  --mc-borda-forte: #4b4b4b;
+  --mc-texto: #f4f4f4;
+  --mc-texto-suave: #b6b6b6;
+  --mc-verde: #69b34c;
+  --mc-verde-hover: #7fcb61;
+  --mc-vermelho: #d55656;
+}
+
+* {
+  box-sizing: border-box;
+  border-radius: 0 !important;
+  text-shadow: none !important;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "MinecraftSeven", "Minecraftia", monospace;
+  background-color: var(--mc-fundo);
+  color: var(--mc-texto);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  image-rendering: pixelated;
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: "MinecraftTen", "MinecraftSeven", "Minecraftia", monospace;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: "MinecraftSeven", "Minecraftia", monospace;
+  font-size: 13px;
+}
+
+img,
+canvas,
+svg {
+  image-rendering: pixelated;
+  shape-rendering: crispEdges;
+}
+
+.app-shell {
+  background-color: var(--mc-fundo);
+}
+
+.app-bg-orbe,
+.app-bg-trama {
+  display: none !important;
+}
+
+.glass-topbar {
+  background-color: #101010;
+  border-bottom: 1px solid var(--mc-borda-forte);
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-custom::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scrollbar-custom::-webkit-scrollbar-track {
+  background: var(--mc-fundo);
+}
+
+.scrollbar-custom::-webkit-scrollbar-thumb {
+  background: var(--mc-superficie);
+  border: 1px solid var(--mc-borda-forte);
+}
+
+.scrollbar-custom::-webkit-scrollbar-thumb:hover {
+  background: var(--mc-cartao);
+}
+
+.fonte-mono {
+  font-family: "MinecraftSeven", "Minecraftia", monospace;
+}
+
+.painel-vivo {
+  border: 1px solid var(--mc-borda);
+  background-color: var(--mc-cartao);
+}
+
+.halo-verde {
+  border-color: var(--mc-verde);
+}
+
+[class*="rounded"],
+[class*="shadow"],
+[class*="backdrop-blur"],
+[class*="drop-shadow"] {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  filter: none !important;
+}
+
+[class*="bg-gradient"],
+[class*="bg-linear"],
+[class*="bg-radial"],
+[class*="bg-conic"] {
+  background-image: none !important;
+}
+
+[style*="linear-gradient"],
+[style*="radial-gradient"] {
+  background-image: none !important;
+}
+
+/* Melhora de legibilidade para textos muito apagados */
+.text-white\/20 {
+  color: rgba(255, 255, 255, 0.58) !important;
+}
+
+.text-white\/30 {
+  color: rgba(255, 255, 255, 0.66) !important;
+}
+
+.text-white\/40 {
+  color: rgba(255, 255, 255, 0.74) !important;
+}
+
+.text-white\/50 {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+.text-white\/60 {
+  color: rgba(255, 255, 255, 0.86) !important;
+}
+
+[class*="text-[10px]"] {
+  font-size: 11px !important;
+}
