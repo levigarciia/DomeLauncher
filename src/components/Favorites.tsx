@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Heart,
   Package,
@@ -6,9 +6,11 @@ import {
   Sparkles,
   Trash2,
   ExternalLink,
-  Download,
+  Search,
+  Filter,
 } from "../iconesPixelados";
 import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "../lib/utils";
 import type { ProjetoConteudo } from "./ProjetoDetalheModal";
 
 export interface FavoriteItem {
@@ -68,16 +70,61 @@ const TYPE_LABELS = {
   shader: "Shader",
 };
 
+// Opções de filtro por tipo
+type FiltroTipo = "todos" | "mod" | "modpack" | "resourcepack" | "shader";
+type FiltroFonte = "todos" | "modrinth" | "curseforge";
+
+const FILTROS_TIPO: { id: FiltroTipo; label: string; icon: typeof Package }[] = [
+  { id: "todos", label: "Todos", icon: Heart },
+  { id: "modpack", label: "Modpacks", icon: Package },
+  { id: "mod", label: "Mods", icon: Package },
+  { id: "resourcepack", label: "Textures", icon: Image },
+  { id: "shader", label: "Shaders", icon: Sparkles },
+];
+
 interface FavoritesProps {
   onAbrirProjeto: (projeto: ProjetoConteudo) => void;
 }
 
 export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
   const [favorites, setFavorites] = useState<FavoriteItem[]>([]);
+  const [busca, setBusca] = useState("");
+  const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>("todos");
+  const [filtroFonte, setFiltroFonte] = useState<FiltroFonte>("todos");
 
   useEffect(() => {
     setFavorites(loadFavorites());
   }, []);
+
+  // Aplicar filtros e busca
+  const favoritosFiltrados = useMemo(() => {
+    return favorites.filter((item) => {
+      // Filtro por tipo
+      if (filtroTipo !== "todos" && item.type !== filtroTipo) return false;
+      // Filtro por fonte
+      if (filtroFonte !== "todos" && item.source !== filtroFonte) return false;
+      // Busca por texto
+      if (busca.trim()) {
+        const termo = busca.toLowerCase();
+        return (
+          item.title.toLowerCase().includes(termo) ||
+          item.author.toLowerCase().includes(termo) ||
+          item.description.toLowerCase().includes(termo)
+        );
+      }
+      return true;
+    });
+  }, [favorites, filtroTipo, filtroFonte, busca]);
+
+  // Contadores para badges dos filtros
+  const contadores = useMemo(() => {
+    const cont: Record<string, number> = { todos: favorites.length };
+    favorites.forEach((item) => {
+      cont[item.type] = (cont[item.type] || 0) + 1;
+      cont[item.source] = (cont[item.source] || 0) + 1;
+    });
+    return cont;
+  }, [favorites]);
 
   const handleRemove = (id: string) => {
     removeFavorite(id);
@@ -113,20 +160,114 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3 mb-8">
+      {/* Cabeçalho */}
+      <div className="flex items-center gap-3 mb-2">
         <div className="p-3 bg-pink-500/10 rounded-2xl border border-pink-500/20">
           <Heart className="text-pink-500" size={24} />
         </div>
-        <div>
+        <div className="flex-1">
           <p className="text-xs uppercase tracking-wider text-white/35 font-bold">
             Sua coleção
           </p>
           <p className="text-white/40 text-sm">
-            Seus mods, modpacks, resource packs e shaders favoritos
+            {favorites.length} {favorites.length === 1 ? "favorito" : "favoritos"}
           </p>
         </div>
       </div>
 
+      {/* Barra de busca e filtros */}
+      <div className="flex flex-col gap-4">
+        {/* Busca */}
+        <div className="relative">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/20" size={18} />
+          <input
+            type="text"
+            value={busca}
+            onChange={(e) => setBusca(e.target.value)}
+            placeholder="Buscar nos favoritos..."
+            className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500/40 transition-all"
+          />
+        </div>
+
+        {/* Filtros */}
+        <div className="flex flex-wrap items-center gap-4">
+          {/* Filtro por tipo */}
+          <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+            {FILTROS_TIPO.map((filtro) => (
+              <button
+                key={filtro.id}
+                onClick={() => setFiltroTipo(filtro.id)}
+                className={cn(
+                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5",
+                  filtroTipo === filtro.id
+                    ? "bg-pink-500 text-white"
+                    : "text-white/40 hover:text-white"
+                )}
+              >
+                <filtro.icon size={12} />
+                {filtro.label}
+                {contadores[filtro.id] ? (
+                  <span className="ml-1 text-[9px] opacity-70">
+                    ({contadores[filtro.id]})
+                  </span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex-1" />
+
+          {/* Filtro por fonte */}
+          <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+            <button
+              onClick={() => setFiltroFonte("todos")}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                filtroFonte === "todos"
+                  ? "bg-white/15 text-white"
+                  : "text-white/40 hover:text-white"
+              )}
+            >
+              <Filter size={12} className="inline mr-1" />
+              Todas
+            </button>
+            <button
+              onClick={() => setFiltroFonte("modrinth")}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-bold transition-all",
+                filtroFonte === "modrinth"
+                  ? "bg-emerald-500 text-black"
+                  : "text-white/40 hover:text-white"
+              )}
+            >
+              Modrinth
+              {contadores.modrinth ? (
+                <span className="ml-1 text-[9px] opacity-70">
+                  ({contadores.modrinth})
+                </span>
+              ) : null}
+            </button>
+            <button
+              onClick={() => setFiltroFonte("curseforge")}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-bold transition-all border",
+                filtroFonte === "curseforge"
+                  ? "bg-[#f16436] text-white border-[#f16436]"
+                  : "text-white/40 hover:text-white border-transparent"
+              )}
+            >
+              CurseForge
+              {contadores.curseforge ? (
+                <span className="ml-1 text-[9px] opacity-70">
+                  ({contadores.curseforge})
+                </span>
+              ) : null}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Lista de favoritos */}
       {favorites.length === 0 ? (
         <div className="text-center py-20 border-2 border-dashed border-white/5 rounded-3xl">
           <Heart size={48} className="mx-auto mb-4 text-white/10" />
@@ -135,10 +276,18 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
             Explore mods e modpacks e adicione aos favoritos
           </p>
         </div>
+      ) : favoritosFiltrados.length === 0 ? (
+        <div className="text-center py-16 border-2 border-dashed border-white/5 rounded-3xl">
+          <Search size={40} className="mx-auto mb-4 text-white/10" />
+          <p className="text-white/40 font-bold">Nenhum resultado</p>
+          <p className="text-white/30 text-sm mt-1">
+            Tente ajustar os filtros ou a busca
+          </p>
+        </div>
       ) : (
         <AnimatePresence>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {favorites.map((item) => {
+            {favoritosFiltrados.map((item) => {
               const TypeIcon = TYPE_ICONS[item.type] || Package;
               return (
                 <motion.div
@@ -146,7 +295,8 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.95 }}
-                  className="bg-white/3 border border-white/5 rounded-2xl p-4 group hover:border-white/10 transition-all"
+                  onClick={() => abrirDetalhes(item)}
+                  className="bg-white/3 border border-white/5 rounded-2xl p-4 group hover:border-white/10 transition-all cursor-pointer"
                 >
                   <div className="flex gap-4">
                     <img
@@ -183,20 +333,19 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
 
                   <div className="flex gap-2 mt-4">
                     <button
-                      onClick={() => abrirDetalhes(item)}
-                      className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-black rounded-xl py-2 text-sm font-bold flex items-center justify-center gap-2 transition-all"
-                    >
-                      <Download size={14} />
-                      Instalar
-                    </button>
-                    <button
-                      onClick={() => openProject(item)}
+                      onClick={(evento) => {
+                        evento.stopPropagation();
+                        openProject(item);
+                      }}
                       className="px-3 bg-white/5 hover:bg-white/10 rounded-xl py-2 text-sm font-bold flex items-center justify-center gap-2 transition-all"
                     >
                       <ExternalLink size={14} />
                     </button>
                     <button
-                      onClick={() => handleRemove(item.id)}
+                      onClick={(evento) => {
+                        evento.stopPropagation();
+                        handleRemove(item.id);
+                      }}
                       className="p-2 bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 rounded-xl transition-all"
                     >
                       <Trash2 size={16} />

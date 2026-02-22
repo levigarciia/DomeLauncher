@@ -15,6 +15,7 @@
     "@iconify-icons/pixelarticons": "^1.2.5",
     "@iconify/react": "^6.0.2",
     "@tauri-apps/api": "2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "2.5.3",
     "@tauri-apps/plugin-updater": "2.9.0",
     "@types/three": "^0.182.0",

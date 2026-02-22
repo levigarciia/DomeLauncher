@@ -1,6 +1,7 @@
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Loader2, Pencil, Users } from '../iconesPixelados';
+import { CONFIGURACAO_SOCIAL } from '../lib/configuracaoSocial';
 import { cn } from '../lib/utils';
 
 interface ContaMinecraft {
@@ -99,43 +100,10 @@ interface SocialSidebarProps {
 }
 
 const CHAVE_SESSAO_SOCIAL = 'dome:social:sessao:v2';
-const URL_API_DOME_LAUNCHER_PADRAO = 'https://api.domestudios.com.br';
-
-const urlApi = (
-  (import.meta.env.DOME_API_PUBLIC_URL as string | undefined) ??
-  (import.meta.env.DOME_API_URL as string | undefined) ??
-  (import.meta.env.VITE_DOME_API_PUBLIC_URL as string | undefined) ??
-  (import.meta.env.VITE_DOME_API_URL as string | undefined) ??
-  (import.meta.env.VITE_API_PUBLIC_URL as string | undefined)
-)
-  ?.trim()
-  .replace(/\/+$/, '');
-
-const API_DOME_LAUNCHER_URL =
-  urlApi && urlApi.length > 0 ? urlApi : URL_API_DOME_LAUNCHER_PADRAO;
-
-const DISCORD_CLIENT_ID = (
-  (import.meta.env.DOME_CLIENT_ID as string | undefined) ??
-  (import.meta.env.DOME_DISCORD_CLIENT_ID as string | undefined) ??
-  (import.meta.env.VITE_DOME_CLIENT_ID as string | undefined) ??
-  (import.meta.env.VITE_DOME_DISCORD_CLIENT_ID as string | undefined)
-)
-  ?.trim()
-  .replace(/\/+$/, '');
-
-const DISCORD_REDIRECT_URI = (
-  (import.meta.env.DOME_REDIRECT_URI as string | undefined) ??
-  (import.meta.env.DOME_DISCORD_REDIRECT_URI as string | undefined) ??
-  (import.meta.env.VITE_DOME_REDIRECT_URI as string | undefined) ??
-  (import.meta.env.VITE_DOME_DISCORD_REDIRECT_URI as string | undefined) ??
-  'https://domestudios.com.br/domelauncher'
-).trim();
-
-const DISCORD_SCOPES = (
-  (import.meta.env.DOME_DISCORD_SCOPES as string | undefined) ??
-  (import.meta.env.VITE_DOME_DISCORD_SCOPES as string | undefined) ??
-  'identify'
-).trim();
+const API_DOME_LAUNCHER_URL = CONFIGURACAO_SOCIAL.apiBaseUrl;
+const DISCORD_CLIENT_ID = CONFIGURACAO_SOCIAL.discordClientId;
+const DISCORD_REDIRECT_URI = CONFIGURACAO_SOCIAL.discordRedirectUri;
+const DISCORD_SCOPES = CONFIGURACAO_SOCIAL.discordScopes;
 
 function normalizarHandle(handle: string): string | null {
   const valor = handle.trim().toLowerCase().replace(/^@+/, '');
@@ -497,7 +465,7 @@ export default function SocialSidebar({ usuarioMinecraft }: SocialSidebarProps) 
     setErroPerfil(null);
 
     if (!API_DOME_LAUNCHER_URL || !DISCORD_CLIENT_ID || !DISCORD_REDIRECT_URI) {
-      setErroPerfil('Configure DOME_API_PUBLIC_URL, DOME_CLIENT_ID e DOME_REDIRECT_URI.');
+      setErroPerfil('Não foi possível iniciar login social. Verifique sua conexão e tente novamente.');
       return;
     }
 

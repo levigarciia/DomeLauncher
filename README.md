@@ -48,5 +48,3 @@ Com o Dome Launcher, você consegue:
 - Releases: https://github.com/levigarciia/DomeLauncher/releases/latest
 
 ---
-
-**Dome Launcher**: mais tempo jogando, menos tempo configurando.

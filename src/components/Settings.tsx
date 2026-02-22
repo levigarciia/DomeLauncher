@@ -22,6 +22,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 
 // Tipos
+type CorDestaque = "verde" | "azul" | "laranja" | "rosa" | "ciano";
+
+function normalizarCorDestaque(valor: unknown): CorDestaque {
+  const texto = String(valor || "").toLowerCase().trim();
+  if (texto === "azul" || texto === "laranja" || texto === "rosa" || texto === "ciano") {
+    return texto;
+  }
+  return "verde";
+}
+
 interface GlobalSettings {
   ram_mb: number;
   java_path: string | null;
@@ -32,6 +42,7 @@ interface GlobalSettings {
   close_on_launch: boolean;
   show_snapshots: boolean;
   discord_rpc_ativo: boolean;
+  cor_destaque: CorDestaque;
 }
 
 interface JavaInfo {
@@ -72,6 +83,18 @@ const JVM_PRESETS = [
   },
 ];
 
+const OPCOES_COR_DESTAQUE: Array<{
+  id: CorDestaque;
+  nome: string;
+  cor: string;
+}> = [
+  { id: "verde", nome: "Verde", cor: "#34d399" },
+  { id: "azul", nome: "Azul", cor: "#60a5fa" },
+  { id: "laranja", nome: "Laranja", cor: "#fb923c" },
+  { id: "rosa", nome: "Rosa", cor: "#f472b6" },
+  { id: "ciano", nome: "Ciano", cor: "#22d3ee" },
+];
+
 export default function Settings() {
   const [settings, setSettings] = useState<GlobalSettings>({
     ram_mb: 4096,
@@ -83,6 +106,7 @@ export default function Settings() {
     close_on_launch: false,
     show_snapshots: false,
     discord_rpc_ativo: true,
+    cor_destaque: "verde",
   });
 
   const [javas, setJavas] = useState<JavaInfo[]>([]);
@@ -109,7 +133,10 @@ export default function Settings() {
         invoke<GlobalSettings>("get_settings"),
         invoke<number>("get_system_ram"),
       ]);
-      setSettings(cfg);
+      setSettings({
+        ...cfg,
+        cor_destaque: normalizarCorDestaque(cfg?.cor_destaque),
+      });
       setSystemRam(ram);
       detectarJavas();
     } catch (e) {
@@ -158,6 +185,11 @@ export default function Settings() {
     setErro(null);
     try {
       await invoke("save_settings", { settings });
+      window.dispatchEvent(
+        new CustomEvent("dome:cor-destaque-atualizada", {
+          detail: { cor: settings.cor_destaque },
+        })
+      );
       setSalvoOk(true);
       setAlterado(false);
       setTimeout(() => setSalvoOk(false), 3000);
@@ -553,6 +585,32 @@ export default function Settings() {
         titulo="Launcher"
         descricao="Comportamento do launcher"
       >
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Cor de destaque</p>
+          <p className="text-xs text-white/30">
+            Essa cor será aplicada nos destaques principais do launcher.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {OPCOES_COR_DESTAQUE.map((opcao) => (
+              <button
+                key={opcao.id}
+                onClick={() => atualizarConfig("cor_destaque", opcao.id)}
+                className={`flex items-center gap-2 px-2.5 py-1.5 border text-xs font-bold transition-all ${
+                  settings.cor_destaque === opcao.id
+                    ? "bg-white/10 border-white/30 text-white"
+                    : "bg-white/3 border-white/10 text-white/65 hover:bg-white/6 hover:text-white"
+                }`}
+              >
+                <span
+                  className="h-3 w-3 border border-white/25"
+                  style={{ backgroundColor: opcao.cor }}
+                />
+                {opcao.nome}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <ToggleItem
           titulo="Discord Rich Presence"
           descricao="Mostra no Discord quando você está no launcher e no Minecraft"

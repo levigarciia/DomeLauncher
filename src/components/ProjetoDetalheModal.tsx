@@ -76,6 +76,36 @@ interface LoaderVersionsResponse {
   versions: Array<{ version: string; stable?: boolean }>;
 }
 
+interface DadosInstalacaoModpackCurseforge {
+  nomeModpack: string;
+  versaoModpack: string;
+  versaoMinecraft: string;
+  loaderType: string;
+  downloadUrl: string;
+  fileName: string;
+}
+
+interface ImagemGaleriaProjetoCurseforgeApi {
+  url: string;
+  rawUrl?: string;
+  title?: string;
+  description?: string;
+  featured?: boolean;
+}
+
+interface DetalhesProjetoCurseforgeApi {
+  id: string;
+  title: string;
+  description: string;
+  body: string;
+  iconUrl: string;
+  author: string;
+  slug: string;
+  downloads?: number;
+  categorias: string[];
+  galeria: ImagemGaleriaProjetoCurseforgeApi[];
+}
+
 interface ProjetoDetalhePaginaProps {
   projeto: ProjetoConteudo;
   instancias: Instance[];
@@ -225,6 +255,18 @@ function escolherVersaoMinecraftIdeal(gameVersions: string[]): string | null {
   return releases[0] || null;
 }
 
+function extrairMensagemErro(erro: unknown, padrao: string): string {
+  if (erro instanceof Error && erro.message.trim()) return erro.message;
+  if (typeof erro === "string" && erro.trim()) return erro;
+  if (erro && typeof erro === "object") {
+    const possivelMensagem = (erro as { message?: unknown }).message;
+    if (typeof possivelMensagem === "string" && possivelMensagem.trim()) {
+      return possivelMensagem;
+    }
+  }
+  return padrao;
+}
+
 function gerarNomeInstanciaDisponivel(nomeBase: string, nomesExistentes: string[]): string {
   const base = nomeBase.trim() || "Novo Modpack";
   const nomes = new Set(nomesExistentes.map((item) => item.toLowerCase()));
@@ -252,6 +294,16 @@ function escolherVersaoLoaderIdeal(
     return compativel?.version || versoes[0].version;
   }
   return versoes.find((item) => item.stable !== false)?.version || versoes[0].version;
+}
+
+function normalizarLoaderModpack(
+  loader: string | null | undefined
+): "vanilla" | "fabric" | "forge" | "neoforge" {
+  const valor = String(loader || "")
+    .toLowerCase()
+    .trim();
+  if (valor === "fabric" || valor === "forge" || valor === "neoforge") return valor;
+  return "vanilla";
 }
 
 function montarUrlProjeto(projeto: ProjetoConteudo): string {
@@ -318,6 +370,39 @@ async function buscarDetalhesProjetoModrinth(projectId: string): Promise<Partial
   };
 }
 
+async function buscarDetalhesProjetoCurseforge(
+  projectId: string
+): Promise<Partial<ProjetoConteudo>> {
+  const dados = await invoke<DetalhesProjetoCurseforgeApi>(
+    "buscar_detalhes_projeto_curseforge",
+    { projectId }
+  );
+
+  return {
+    id: typeof dados.id === "string" ? dados.id : projectId,
+    title: typeof dados.title === "string" ? dados.title : "",
+    description: typeof dados.description === "string" ? dados.description : "",
+    body: typeof dados.body === "string" ? dados.body : "",
+    icon_url: typeof dados.iconUrl === "string" ? dados.iconUrl : "",
+    author: typeof dados.author === "string" ? dados.author : "",
+    slug: typeof dados.slug === "string" ? dados.slug : "",
+    downloads: typeof dados.downloads === "number" ? dados.downloads : undefined,
+    categorias: Array.isArray(dados.categorias) ? dados.categorias : undefined,
+    galeria: Array.isArray(dados.galeria)
+      ? dados.galeria
+          .filter((imagem) => typeof imagem?.url === "string" && imagem.url.trim().length > 0)
+          .map((imagem): ImagemGaleriaProjeto => ({
+            url: imagem.url,
+            raw_url: typeof imagem.rawUrl === "string" ? imagem.rawUrl : undefined,
+            title: typeof imagem.title === "string" ? imagem.title : undefined,
+            description:
+              typeof imagem.description === "string" ? imagem.description : undefined,
+            featured: Boolean(imagem.featured),
+          }))
+      : undefined,
+  };
+}
+
 async function buscarVersoesProjetoModrinth(
   projectId: string
 ): Promise<VersaoProjetoModrinth[]> {
@@ -366,15 +451,17 @@ export default function ProjetoDetalheModal({
     setAbaConteudo("descricao");
     setDetalhesProjeto(null);
     setErroDetalhes(null);
-    setCarregandoDetalhes(projeto.source === "modrinth");
+    setCarregandoDetalhes(true);
 
     const carregarDetalhes = async () => {
-      if (projeto.source !== "modrinth") {
-        setCarregandoDetalhes(false);
-        return;
-      }
       try {
-        const detalhes = await buscarDetalhesProjetoModrinth(projeto.id);
+        let detalhes: Partial<ProjetoConteudo> | null = null;
+        if (projeto.source === "modrinth") {
+          detalhes = await buscarDetalhesProjetoModrinth(projeto.id);
+        } else if (projeto.source === "curseforge") {
+          detalhes = await buscarDetalhesProjetoCurseforge(projeto.id);
+        }
+
         if (!cancelado) setDetalhesProjeto(detalhes);
       } catch (e) {
         if (!cancelado) {
@@ -434,8 +521,6 @@ export default function ProjetoDetalheModal({
     [projetoExibicao.body]
   );
   const galeriaProjeto = projetoExibicao.galeria || [];
-  const instalacaoCurseforgeModpackNaoSuportada =
-    projeto.source === "curseforge" && projeto.project_type === "modpack";
   const requerCompatibilidadeModrinth =
     projeto.source === "modrinth" && projeto.project_type !== "modpack";
 
@@ -542,23 +627,9 @@ export default function ProjetoDetalheModal({
     if (instalando) return;
 
     if (projeto.project_type === "modpack") {
-      if (projeto.source !== "modrinth") {
-        setErro("Instalação automática de modpack CurseForge ainda não está disponível.");
-        return;
-      }
       if (!usuarioLogado) {
         onSolicitarLogin?.();
         setErro("Faça login para instalar modpacks como nova instância.");
-        return;
-      }
-      if (!versaoModpackIdeal) {
-        setErro("Nenhuma versão de modpack compatível foi encontrada.");
-        return;
-      }
-      const arquivoModpack = escolherArquivoIdeal(versaoModpackIdeal, "modpack");
-      const versaoMinecraft = escolherVersaoMinecraftIdeal(versaoModpackIdeal.game_versions || []);
-      if (!arquivoModpack || !versaoMinecraft) {
-        setErro("Não foi possível determinar arquivo ou versão ideal do modpack.");
         return;
       }
 
@@ -566,13 +637,50 @@ export default function ProjetoDetalheModal({
       setInstalando(true);
       let idOverlayCriacao = "";
       try {
-        const loadersVersao = (versaoModpackIdeal.loaders || []).map((item) =>
-          item.toLowerCase()
-        );
-        const loaderSelecionado =
-          ORDEM_LOADER_MODPACK.find((loader) => loadersVersao.includes(loader)) || "vanilla";
+        let nomeBaseInstancia = projetoExibicao.title;
+        let versaoMinecraft = "";
+        let loaderSelecionado: "vanilla" | "fabric" | "forge" | "neoforge" = "vanilla";
+        let arquivoModpackUrl = "";
+        let arquivoModpackNome = "";
+        let versaoInstalada = "latest";
+        let versaoId = "";
+
+        if (projeto.source === "modrinth") {
+          if (!versaoModpackIdeal) {
+            throw new Error("Nenhuma versão de modpack compatível foi encontrada.");
+          }
+          const arquivoModpack = escolherArquivoIdeal(versaoModpackIdeal, "modpack");
+          const versaoIdeal = escolherVersaoMinecraftIdeal(versaoModpackIdeal.game_versions || []);
+          if (!arquivoModpack || !versaoIdeal) {
+            throw new Error("Não foi possível determinar arquivo ou versão ideal do modpack.");
+          }
+
+          const loadersVersao = (versaoModpackIdeal.loaders || []).map((item) =>
+            item.toLowerCase()
+          );
+          loaderSelecionado =
+            ORDEM_LOADER_MODPACK.find((loader) => loadersVersao.includes(loader)) || "vanilla";
+          versaoMinecraft = versaoIdeal;
+          arquivoModpackUrl = arquivoModpack.url;
+          arquivoModpackNome = arquivoModpack.filename;
+          versaoInstalada = versaoModpackIdeal.version_number;
+          versaoId = versaoModpackIdeal.id;
+        } else {
+          const dadosCurseforge = await invoke<DadosInstalacaoModpackCurseforge>(
+            "resolver_modpack_curseforge",
+            { projectId: projeto.id }
+          );
+          nomeBaseInstancia = dadosCurseforge.nomeModpack || projetoExibicao.title;
+          versaoMinecraft = dadosCurseforge.versaoMinecraft;
+          loaderSelecionado = normalizarLoaderModpack(dadosCurseforge.loaderType);
+          arquivoModpackUrl = dadosCurseforge.downloadUrl;
+          arquivoModpackNome = dadosCurseforge.fileName;
+          versaoInstalada = dadosCurseforge.versaoModpack || "latest";
+          versaoId = dadosCurseforge.versaoModpack || "";
+        }
+
         const nomeInstancia = gerarNomeInstanciaDisponivel(
-          projetoExibicao.title,
+          nomeBaseInstancia,
           instancias.map((item) => item.name)
         );
         const idInstancia = gerarIdInstancia(nomeInstancia);
@@ -629,26 +737,26 @@ export default function ProjetoDetalheModal({
           instanceId: idInstancia,
           modpackInfo: {
             projectId: projeto.id,
-            versionId: versaoModpackIdeal.id,
-            name: projetoExibicao.title,
+            versionId: versaoId,
+            name: nomeBaseInstancia,
             author: projetoExibicao.author,
             icon: projetoExibicao.icon_url,
             slug: projetoExibicao.slug,
-            source: "modrinth",
-            installedVersion: versaoModpackIdeal.version_number,
+            source: projeto.source,
+            installedVersion: versaoInstalada,
           },
         });
         await invoke("install_modpack_files", {
           instanceId: idInstancia,
-          downloadUrl: arquivoModpack.url,
-          fileName: arquivoModpack.filename,
+          downloadUrl: arquivoModpackUrl,
+          fileName: arquivoModpackNome,
         });
         completeCreatingInstance(idOverlayCriacao);
         setInstalando(false);
         setSucesso(true);
         setTimeout(() => window.location.reload(), 1000);
       } catch (e) {
-        const mensagem = e instanceof Error ? e.message : "Falha ao instalar modpack.";
+        const mensagem = extrairMensagemErro(e, "Falha ao instalar modpack.");
         setErro(mensagem);
         if (idOverlayCriacao) errorCreatingInstance(idOverlayCriacao, mensagem);
         setInstalando(false);
@@ -690,7 +798,7 @@ export default function ProjetoDetalheModal({
         }
         setSucesso(true);
       } catch (e) {
-        setErro(e instanceof Error ? e.message : "Erro ao instalar projeto CurseForge.");
+        setErro(extrairMensagemErro(e, "Erro ao instalar projeto CurseForge."));
       } finally {
         setInstalando(false);
       }
@@ -731,7 +839,7 @@ export default function ProjetoDetalheModal({
       setSucesso(true);
       setInstalando(false);
     } catch (e) {
-      setErro(e instanceof Error ? e.message : "Erro ao instalar projeto.");
+      setErro(extrairMensagemErro(e, "Erro ao instalar projeto."));
       setInstalando(false);
     }
   };
@@ -751,7 +859,6 @@ export default function ProjetoDetalheModal({
           onClick={instalarProjeto}
           disabled={
             instalando ||
-            instalacaoCurseforgeModpackNaoSuportada ||
             (projeto.project_type !== "modpack" && !instanciaSelecionadaId) ||
             (projeto.project_type === "modpack" &&
               projeto.source === "modrinth" &&
@@ -781,11 +888,7 @@ export default function ProjetoDetalheModal({
           ) : (
             <>
               <Download size={13} />
-              {instalacaoCurseforgeModpackNaoSuportada
-                ? "Indisponível"
-                : projeto.project_type === "modpack"
-                  ? "Instalar"
-                  : "Instalar"}
+              Instalar
             </>
           )}
         </button>
@@ -976,24 +1079,16 @@ export default function ProjetoDetalheModal({
 
             {projeto.project_type === "modpack" ? (
               <div className="text-xs text-white/75 space-y-1">
-                {projeto.source === "curseforge" ? (
-                  <p className="text-orange-200">
-                    Instalação automática de modpacks CurseForge ainda não está disponível.
-                  </p>
-                ) : (
+                <p>O launcher criará uma nova instância automaticamente.</p>
+                {projeto.source === "modrinth" && versaoModpackIdeal && (
                   <>
-                    <p>O launcher criará uma nova instância automaticamente.</p>
-                    {versaoModpackIdeal && (
-                      <>
-                        <p>Versão ideal: {versaoModpackIdeal.version_number}</p>
-                        <p>
-                          MC: {escolherVersaoMinecraftIdeal(versaoModpackIdeal.game_versions || [])}
-                        </p>
-                      </>
-                    )}
-                    {!usuarioLogado && <p className="text-orange-200">Faça login para instalar.</p>}
+                    <p>Versão ideal: {versaoModpackIdeal.version_number}</p>
+                    <p>
+                      MC: {escolherVersaoMinecraftIdeal(versaoModpackIdeal.game_versions || [])}
+                    </p>
                   </>
                 )}
+                {!usuarioLogado && <p className="text-orange-200">Faça login para instalar.</p>}
               </div>
             ) : (
               <div className="space-y-2">

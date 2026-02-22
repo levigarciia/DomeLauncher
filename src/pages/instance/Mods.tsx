@@ -67,65 +67,34 @@ const Mods: React.FC<ModsProps> = ({ instance }) => {
   // Carregar mods populares
   const loadPopularMods = async () => {
     try {
-      console.log('Carregando mods populares...')
       setSearching(true)
+      const plataformaAtiva = activePlatform === 'curseforge' ? 'curseforge' : 'modrinth'
+      const results: any[] = await invoke('search_mods_online', {
+        query: '',
+        platform: plataformaAtiva,
+        contentType: 'mod'
+      })
 
-      // Buscar mods populares conhecidos que sempre existem
-      const popularMods = [
-        'fabric-api', 'fabric', 'cloth-config', 'modmenu', 'rei', 'jei',
-        'sodium', 'iris', 'phosphor', 'lithium', 'ferritecore', 'dynamic-fps',
-        'optifine', 'forge', 'neoforge'
-      ]
+      const formattedResults: ProjectListEntry[] = results.slice(0, 20).map(result => ({
+        path: '',
+        name: result.name || 'Nome desconhecido',
+        slug: result.slug || (result.name ? result.name.toLowerCase().replace(/\s+/g, '-') : 'unknown'),
+        author: {
+          name: result.author || 'Desconhecido',
+          slug: ((result.author || 'unknown').toLowerCase()),
+          type: 'user'
+        },
+        version: result.latestVersion || 'Latest',
+        file_name: '',
+        icon: result.iconUrl,
+        disabled: false,
+        outdated: false,
+        updated: dayjs(),
+        project_type: 'mod',
+        id: result.id
+      }))
 
-      const allResults: ProjectListEntry[] = []
-
-      for (const modName of popularMods.slice(0, 10)) { // Limitar para não sobrecarregar
-        try {
-          console.log(`Buscando mod popular: ${modName}`)
-          const results: any[] = await invoke('search_mods_online', {
-            query: modName,
-            platform: undefined, // Buscar em ambas as plataformas
-            contentType: 'mod'
-          })
-
-          console.log(`Encontrados ${results.length} resultados para "${modName}"`)
-
-          // Pegar apenas o primeiro resultado (mais relevante)
-          if (results.length > 0) {
-            const result = results[0]
-            const formattedResult: ProjectListEntry = {
-              path: '',
-              name: result.name,
-              slug: result.slug || result.name.toLowerCase().replace(/\s+/g, '-'),
-              author: { name: result.author, slug: (result.author || 'unknown').toLowerCase(), type: 'user' },
-              version: result.latestVersion || 'Latest',
-              file_name: '',
-              icon: result.iconUrl,
-              disabled: false,
-              outdated: false,
-              updated: dayjs(),
-              project_type: 'mod',
-              id: result.id
-            }
-
-            allResults.push(formattedResult)
-          }
-
-          // Pequena pausa para não sobrecarregar as APIs
-          await new Promise(resolve => setTimeout(resolve, 100))
-
-        } catch (error) {
-          console.error(`Erro ao buscar mod popular "${modName}":`, error)
-        }
-      }
-
-      // Remover duplicatas
-      const uniqueResults = allResults
-        .filter((mod, index, self) => self.findIndex(m => m.id === mod.id) === index)
-        .slice(0, 20) // Limitar a 20 mods
-
-      console.log('Mods populares carregados:', uniqueResults.length, uniqueResults.map(m => m.name))
-      setSearchResults(uniqueResults)
+      setSearchResults(formattedResults)
     } catch (error) {
       console.error('Erro ao carregar mods populares:', error)
       setSearchResults([])

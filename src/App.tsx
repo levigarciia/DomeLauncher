@@ -47,6 +47,15 @@ const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
 const INTERVALO_VERIFICACAO_INSTANCIAS_MS = 20 * 1000;
 type TipoExplorePresence = "modpack" | "mod" | "resourcepack" | "shader";
 type FonteExplorePresence = "modrinth" | "curseforge";
+type CorDestaque = "verde" | "azul" | "laranja" | "rosa" | "ciano";
+
+function normalizarCorDestaque(valor: unknown): CorDestaque {
+  const texto = String(valor || "").toLowerCase().trim();
+  if (texto === "azul" || texto === "laranja" || texto === "rosa" || texto === "ciano") {
+    return texto;
+  }
+  return "verde";
+}
 
 const TITULOS_ABA: Record<string, string> = {
   home: "Início",
@@ -87,6 +96,7 @@ export default function App() {
   } | null>(null);
   const [projetoDetalhe, setProjetoDetalhe] = useState<ProjetoConteudo | null>(null);
   const [abaOrigemProjeto, setAbaOrigemProjeto] = useState<AbaOrigemProjeto>("home");
+  const [corDestaque, setCorDestaque] = useState<CorDestaque>("verde");
   const [contasMinecraft, setContasMinecraft] = useState<MinecraftAccount[]>([]);
   const [carregandoContasMinecraft, setCarregandoContasMinecraft] = useState(false);
   const [menuContaAberto, setMenuContaAberto] = useState(false);
@@ -182,6 +192,32 @@ export default function App() {
   useEffect(() => {
     atualizarSessaoMinecraft();
   }, [atualizarSessaoMinecraft]);
+
+  useEffect(() => {
+    const carregarCorDestaque = async () => {
+      try {
+        const configuracoes = await invoke<{ cor_destaque?: string }>("get_settings");
+        setCorDestaque(normalizarCorDestaque(configuracoes?.cor_destaque));
+      } catch {
+        setCorDestaque("verde");
+      }
+    };
+
+    const aoAtualizarCor = (evento: Event) => {
+      const detalhe = (evento as CustomEvent<{ cor?: string }>).detail;
+      setCorDestaque(normalizarCorDestaque(detalhe?.cor));
+    };
+
+    carregarCorDestaque();
+    window.addEventListener("dome:cor-destaque-atualizada", aoAtualizarCor);
+    return () => {
+      window.removeEventListener("dome:cor-destaque-atualizada", aoAtualizarCor);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-cor-destaque", corDestaque);
+  }, [corDestaque]);
 
   useEffect(() => {
     if (!menuContaAberto) {
@@ -972,6 +1008,8 @@ export default function App() {
                   instanciaAtivaId={instanciaAtiva?.id ?? null}
                   onSelectInstance={(instance) => {
                     setSelectedInstance(instance);
+                  }}
+                  onAbrirGerenciadorInstancia={(instance) => {
                     setManagedInstanceId(instance.id);
                     setActiveTab("instance-manager");
                   }}

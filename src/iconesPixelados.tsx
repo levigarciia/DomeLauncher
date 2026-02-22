@@ -148,3 +148,4 @@ export const WifiOff = criarIcone(wifiOff);
 export const X = criarIcone(fechar);
 export const XCircle = criarIcone(fecharCaixa);
 export const Avatar = criarIcone(avatar);
+export const Filter = criarIcone(configuracoes);

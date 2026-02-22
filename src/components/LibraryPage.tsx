@@ -17,8 +17,13 @@ import {
   Pencil,
   Plus,
   Box,
+  Upload,
+  Download,
+  Loader2,
 } from "../iconesPixelados";
 import { motion, AnimatePresence } from "framer-motion";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Instance } from "../hooks/useLauncher";
 import { cn } from "../lib/utils";
 
@@ -39,6 +44,26 @@ interface LibraryState {
   viewMode: ViewMode;
   sortKey: SortKey;
   sortDir: SortDir;
+}
+
+interface InstanciaImportavelExterna {
+  idExterno: string;
+  launcher: string;
+  nome: string;
+  versaoMinecraft: string;
+  loaderType?: string;
+  loaderVersion?: string;
+  caminhoOrigem: string;
+  caminhoJogo: string;
+}
+
+interface ResultadoImportacaoInstancia {
+  idExterno: string;
+  launcher: string;
+  nomeOrigem: string;
+  sucesso: boolean;
+  instanciaId?: string;
+  mensagem: string;
 }
 
 function deduplicarIds(ids: string[]): string[] {
@@ -107,6 +132,7 @@ interface LibraryPageProps {
   instances: Instance[];
   instanciaAtivaId: string | null;
   onSelectInstance: (instance: Instance) => void;
+  onAbrirGerenciadorInstancia: (instance: Instance) => void;
   onLaunch: (id: string) => void;
   onDelete: (id: string) => void;
   onCreateNew: () => void;
@@ -118,6 +144,7 @@ export default function LibraryPage({
   instances,
   instanciaAtivaId,
   onSelectInstance,
+  onAbrirGerenciadorInstancia,
   onLaunch,
   onDelete,
   onCreateNew,
@@ -131,12 +158,46 @@ export default function LibraryPage({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
   const [menuAberto, setMenuAberto] = useState<string | null>(null);
+  const [modalEscolhaImportacaoAberto, setModalEscolhaImportacaoAberto] = useState(false);
+  const [modalImportacaoAberto, setModalImportacaoAberto] = useState(false);
+  const [instanciaSelecionadaId, setInstanciaSelecionadaId] = useState<string | null>(null);
+  const [carregandoImportaveis, setCarregandoImportaveis] = useState(false);
+  const [importandoInstancias, setImportandoInstancias] = useState(false);
+  const [instanciasImportaveis, setInstanciasImportaveis] = useState<
+    InstanciaImportavelExterna[]
+  >([]);
+  const [idsSelecionadosImportacao, setIdsSelecionadosImportacao] = useState<Set<string>>(
+    new Set()
+  );
+  const [resultadoImportacao, setResultadoImportacao] = useState<
+    ResultadoImportacaoInstancia[]
+  >([]);
+  const [erroImportacao, setErroImportacao] = useState<string | null>(null);
+  const [arrastoManualAtivo, setArrastoManualAtivo] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Salvar estado ao mudar
   useEffect(() => {
     salvarEstado(state);
   }, [state]);
+
+  useEffect(() => {
+    if (instances.length === 0) {
+      setInstanciaSelecionadaId(null);
+      return;
+    }
+
+    const existeSelecionada = instanciaSelecionadaId
+      ? instances.some((instancia) => instancia.id === instanciaSelecionadaId)
+      : false;
+
+    if (existeSelecionada) return;
+
+    const ativaExiste = instanciaAtivaId
+      ? instances.some((instancia) => instancia.id === instanciaAtivaId)
+      : false;
+    setInstanciaSelecionadaId(ativaExiste ? instanciaAtivaId : instances[0]?.id || null);
+  }, [instances, instanciaAtivaId, instanciaSelecionadaId]);
 
   // Garantir que todas as instâncias estejam em algum grupo
   useEffect(() => {
@@ -298,24 +359,12 @@ export default function LibraryPage({
     }));
   };
 
-  // Drag & Drop
-  const handleDragStart = (instanceId: string) => {
-    setDraggedId(instanceId);
-  };
-
-  const handleDragOver = (e: React.DragEvent, groupId: string) => {
-    e.preventDefault();
-    setDragOverGroup(groupId);
-  };
-
-  const handleDrop = (targetGroupId: string) => {
-    if (!draggedId) return;
-
+  const moverInstanciaParaGrupo = (idArrastado: string, targetGroupId: string) => {
     setState((prev) => {
       // Remover a instância de todos os grupos
       const gruposSemItem = prev.groups.map((g) => ({
         ...g,
-        instanceIds: g.instanceIds.filter((id) => id !== draggedId),
+        instanceIds: g.instanceIds.filter((id) => id !== idArrastado),
       }));
 
       // Adicionar no grupo alvo
@@ -325,15 +374,53 @@ export default function LibraryPage({
           g.id === targetGroupId
             ? {
                 ...g,
-                instanceIds: deduplicarIds([...g.instanceIds, draggedId!]),
+                instanceIds: deduplicarIds([...g.instanceIds, idArrastado]),
               }
             : g
         ),
       };
     });
+  };
 
+  const iniciarArrastoManual = (instanceId: string) => {
+    setDraggedId(instanceId);
+    setArrastoManualAtivo(true);
+  };
+
+  const finalizarArrastoManual = useCallback(() => {
+    setArrastoManualAtivo(false);
     setDraggedId(null);
     setDragOverGroup(null);
+  }, []);
+
+  useEffect(() => {
+    if (!arrastoManualAtivo) return;
+    const aoSoltarMouse = () => finalizarArrastoManual();
+    window.addEventListener("mouseup", aoSoltarMouse);
+    return () => window.removeEventListener("mouseup", aoSoltarMouse);
+  }, [arrastoManualAtivo, finalizarArrastoManual]);
+
+  useEffect(() => {
+    if (!arrastoManualAtivo) return;
+    const cursorAnterior = document.body.style.cursor;
+    const userSelectAnterior = document.body.style.userSelect;
+    document.body.style.cursor = "grabbing";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.body.style.cursor = cursorAnterior;
+      document.body.style.userSelect = userSelectAnterior;
+    };
+  }, [arrastoManualAtivo]);
+
+  const handleGrupoMouseEnter = (groupId: string) => {
+    if (!arrastoManualAtivo || !draggedId) return;
+    setDragOverGroup(groupId);
+  };
+
+  const handleGrupoMouseUp = (groupId: string) => {
+    if (!arrastoManualAtivo || !draggedId) return;
+    moverInstanciaParaGrupo(draggedId, groupId);
+    finalizarArrastoManual();
   };
 
   // Alternar ordenação
@@ -352,6 +439,162 @@ export default function LibraryPage({
     version: "Versão",
     loader: "Loader",
   };
+
+  const carregarInstanciasImportaveis = async () => {
+    setCarregandoImportaveis(true);
+    setErroImportacao(null);
+    try {
+      const lista = await invoke<InstanciaImportavelExterna[]>(
+        "listar_instancias_importaveis"
+      );
+      setInstanciasImportaveis(lista || []);
+      setIdsSelecionadosImportacao(new Set((lista || []).map((item) => item.idExterno)));
+    } catch (erro) {
+      setErroImportacao(
+        erro instanceof Error
+          ? erro.message
+          : "Não foi possível listar instâncias para importação."
+      );
+      setInstanciasImportaveis([]);
+      setIdsSelecionadosImportacao(new Set());
+    } finally {
+      setCarregandoImportaveis(false);
+    }
+  };
+
+  const abrirModalImportacao = () => {
+    setModalEscolhaImportacaoAberto(true);
+  };
+
+  const abrirModalImportacaoInstancias = async () => {
+    setModalEscolhaImportacaoAberto(false);
+    setModalImportacaoAberto(true);
+    setResultadoImportacao([]);
+    await carregarInstanciasImportaveis();
+  };
+
+  const alternarSelecaoImportacao = (idExterno: string) => {
+    setIdsSelecionadosImportacao((anterior) => {
+      const proximo = new Set(anterior);
+      if (proximo.has(idExterno)) {
+        proximo.delete(idExterno);
+      } else {
+        proximo.add(idExterno);
+      }
+      return proximo;
+    });
+  };
+
+  const selecionarTodasImportaveis = () => {
+    if (idsSelecionadosImportacao.size === instanciasImportaveis.length) {
+      setIdsSelecionadosImportacao(new Set());
+      return;
+    }
+    setIdsSelecionadosImportacao(
+      new Set(instanciasImportaveis.map((instancia) => instancia.idExterno))
+    );
+  };
+
+  const importarSelecionadas = async () => {
+    const selecionadas = instanciasImportaveis.filter((instancia) =>
+      idsSelecionadosImportacao.has(instancia.idExterno)
+    );
+    if (selecionadas.length === 0) return;
+
+    setImportandoInstancias(true);
+    setErroImportacao(null);
+    try {
+      const resultados = await invoke<ResultadoImportacaoInstancia[]>(
+        "importar_instancias_externas",
+        { instancias: selecionadas }
+      );
+      setResultadoImportacao(resultados || []);
+    } catch (erro) {
+      setErroImportacao(
+        erro instanceof Error
+          ? erro.message
+          : "Falha ao importar as instâncias selecionadas."
+      );
+      setResultadoImportacao([]);
+    } finally {
+      setImportandoInstancias(false);
+    }
+  };
+
+  // ===== EXPORTAR / IMPORTAR POR ARQUIVO =====
+  const [exportandoId, setExportandoId] = useState<string | null>(null);
+  const [importandoArquivo, setImportandoArquivo] = useState(false);
+
+  const exportarInstancia = async (instanceId: string) => {
+    setExportandoId(instanceId);
+    try {
+      const resultado = await invoke<{
+        sucesso: boolean;
+        caminhoArquivo?: string;
+        mensagem: string;
+      }>("exportar_instancia", { instanceId, destino: null });
+      if (resultado.sucesso) {
+        alert(`✅ ${resultado.mensagem}\n\nSalvo em: ${resultado.caminhoArquivo}`);
+      } else {
+        alert(`❌ ${resultado.mensagem}`);
+      }
+    } catch (erro) {
+      alert(`Erro ao exportar: ${erro instanceof Error ? erro.message : String(erro)}`);
+    } finally {
+      setExportandoId(null);
+    }
+  };
+
+  const importarArquivoDome = async () => {
+    try {
+      // Usar dialog nativo do Tauri para selecionar arquivo
+      const caminho = await openDialog({
+        title: "Selecionar arquivo .dome",
+        filters: [{ name: "Dome Instance", extensions: ["dome", "zip"] }],
+        multiple: false,
+        directory: false,
+      });
+      if (!caminho) return;
+
+      setImportandoArquivo(true);
+      const resultado = await invoke<{
+        sucesso: boolean;
+        instanciaId?: string;
+        mensagem: string;
+      }>("importar_instancia_arquivo", { caminhoArquivo: caminho });
+
+      if (resultado.sucesso) {
+        alert(`✅ ${resultado.mensagem}`);
+        window.location.reload();
+      } else {
+        alert(`❌ ${resultado.mensagem}`);
+      }
+    } catch (erro) {
+      alert(`Erro ao importar: ${erro instanceof Error ? erro.message : String(erro)}`);
+    } finally {
+      setImportandoArquivo(false);
+    }
+  };
+
+  const exportarInstanciaSelecionada = async () => {
+    if (!instanciaSelecionadaId) return;
+    await exportarInstancia(instanciaSelecionadaId);
+  };
+
+  const selecionarInstancia = (instancia: Instance) => {
+    setInstanciaSelecionadaId(instancia.id);
+    onSelectInstance(instancia);
+  };
+
+  const totalSucessosImportacao = resultadoImportacao.filter((item) => item.sucesso).length;
+  const nomeLauncher = (launcher: string) =>
+    launcher === "prism"
+      ? "Prism Launcher"
+      : launcher === "modrinth"
+        ? "Modrinth"
+        : launcher === "curseforge"
+          ? "CurseForge"
+          : launcher;
 
   return (
     <div className="space-y-4">
@@ -457,7 +700,29 @@ export default function LibraryPage({
           </button>
         </div>
 
-        {/* Botão nova instância */}
+        {/* Importar / Exportar */}
+        <button
+          onClick={abrirModalImportacao}
+          className="flex items-center gap-1.5 px-3 py-2 bg-white/5 border border-white/15 rounded-xl text-xs text-white/70 hover:text-white hover:bg-white/10 transition-all font-bold"
+        >
+          <Upload size={13} />
+          Importar
+        </button>
+
+        <button
+          onClick={exportarInstanciaSelecionada}
+          disabled={!instanciaSelecionadaId || Boolean(exportandoId)}
+          className="flex items-center gap-1.5 px-3 py-2 bg-white/5 border border-white/15 rounded-xl text-xs text-white/70 hover:text-white hover:bg-white/10 transition-all font-bold disabled:opacity-40"
+          title="Exportar instância selecionada"
+        >
+          {exportandoId ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : (
+            <Download size={13} />
+          )}
+          Exportar
+        </button>
+
         <button
           onClick={onCreateNew}
           className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold"
@@ -513,7 +778,8 @@ export default function LibraryPage({
                 onNomeChange={setNomeGrupo}
                 onNomeSalvar={() => salvarNomeGrupo(grupo.id)}
                 onDeletar={() => deletarGrupo(grupo.id)}
-                onSelect={onSelectInstance}
+                onSelect={selecionarInstancia}
+                onAbrirGerenciador={onAbrirGerenciadorInstancia}
                 onLaunch={(id) => {
                   if (!user) {
                     onLogin();
@@ -522,19 +788,286 @@ export default function LibraryPage({
                   onLaunch(id);
                 }}
                 onDelete={onDelete}
-                onDragStart={handleDragStart}
-                onDragOver={(e) => handleDragOver(e, grupo.id)}
-                onDrop={() => handleDrop(grupo.id)}
-                onDragEnd={() => {
-                  setDraggedId(null);
-                  setDragOverGroup(null);
-                }}
+                onExport={exportarInstancia}
+                onIniciarArrasto={iniciarArrastoManual}
+                onMouseEnterGrupo={() => handleGrupoMouseEnter(grupo.id)}
+                onMouseUpGrupo={() => handleGrupoMouseUp(grupo.id)}
+                onFinalizarArrasto={finalizarArrastoManual}
+                instanciaSelecionadaId={instanciaSelecionadaId}
                 instanciaAtivaId={instanciaAtivaId}
+                exportandoId={exportandoId}
               />
             );
           })}
         </div>
       )}
+
+      <AnimatePresence>
+        {modalEscolhaImportacaoAberto && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-xs p-4 flex items-center justify-center"
+            onClick={() => {
+              if (importandoArquivo) return;
+              setModalEscolhaImportacaoAberto(false);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              className="w-full max-w-xl bg-[#141416] border border-white/15 rounded-2xl overflow-hidden"
+              onClick={(evento) => evento.stopPropagation()}
+            >
+              <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wide">Importar</h3>
+                  <p className="text-xs text-white/50 mt-1">
+                    Escolha como deseja importar para a biblioteca.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setModalEscolhaImportacaoAberto(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-3">
+                <button
+                  onClick={async () => {
+                    setModalEscolhaImportacaoAberto(false);
+                    await importarArquivoDome();
+                  }}
+                  disabled={importandoArquivo}
+                  className="w-full text-left border border-white/10 bg-white/5 hover:bg-white/10 rounded-xl px-4 py-3 transition-all disabled:opacity-40"
+                >
+                  <p className="text-sm font-bold flex items-center gap-2">
+                    {importandoArquivo ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <Upload size={14} />
+                    )}
+                    Importar arquivo `.dome`
+                  </p>
+                  <p className="text-xs text-white/55 mt-1">
+                    Também aceita `.dome.zip` para compatibilidade.
+                  </p>
+                </button>
+
+                <button
+                  onClick={abrirModalImportacaoInstancias}
+                  className="w-full text-left border border-white/10 bg-white/5 hover:bg-white/10 rounded-xl px-4 py-3 transition-all"
+                >
+                  <p className="text-sm font-bold flex items-center gap-2">
+                    <FolderOpen size={14} />
+                    Importar de outro launcher
+                  </p>
+                  <p className="text-xs text-white/55 mt-1">
+                    Detecta instâncias de Prism Launcher, Modrinth e CurseForge.
+                  </p>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {modalImportacaoAberto && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-xs p-4 flex items-center justify-center"
+            onClick={() => {
+              if (importandoInstancias) return;
+              setModalImportacaoAberto(false);
+            }}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 12, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              className="w-full max-w-3xl bg-[#141416] border border-white/15 rounded-2xl overflow-hidden"
+              onClick={(evento) => evento.stopPropagation()}
+            >
+              <div className="px-5 py-4 border-b border-white/10 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-wide">Importar Instâncias</h3>
+                  <p className="text-xs text-white/50 mt-1">
+                    Detectadas em Prism Launcher, Modrinth e CurseForge.
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (importandoInstancias) return;
+                    setModalImportacaoAberto(false);
+                    setModalEscolhaImportacaoAberto(false);
+                  }}
+                  className="p-1.5 rounded-lg hover:bg-white/10 text-white/50 hover:text-white transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="px-5 py-4">
+                {erroImportacao && (
+                  <div className="mb-3 border border-red-400/30 bg-red-500/10 text-red-200 text-xs px-3 py-2 rounded-lg">
+                    {erroImportacao}
+                  </div>
+                )}
+
+                {carregandoImportaveis ? (
+                  <div className="py-12 flex items-center justify-center text-white/60 text-sm">
+                    <Loader2 size={14} className="animate-spin mr-2" />
+                    Buscando instâncias...
+                  </div>
+                ) : instanciasImportaveis.length === 0 ? (
+                  <div className="py-12 text-center text-white/50 text-sm">
+                    Nenhuma instância externa foi encontrada no computador.
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-3 flex items-center justify-between">
+                      <button
+                        onClick={selecionarTodasImportaveis}
+                        className="text-xs text-white/70 hover:text-white transition-colors"
+                      >
+                        {idsSelecionadosImportacao.size === instanciasImportaveis.length
+                          ? "Desmarcar todas"
+                          : "Marcar todas"}
+                      </button>
+                      <span className="text-[11px] text-white/40">
+                        {idsSelecionadosImportacao.size}/{instanciasImportaveis.length} selecionadas
+                      </span>
+                    </div>
+
+                    <div className="max-h-[360px] overflow-y-auto space-y-2 pr-1">
+                      {instanciasImportaveis.map((instancia) => {
+                        const selecionada = idsSelecionadosImportacao.has(instancia.idExterno);
+                        return (
+                          <button
+                            key={instancia.idExterno}
+                            onClick={() => alternarSelecaoImportacao(instancia.idExterno)}
+                            className={cn(
+                              "w-full text-left border rounded-xl px-3 py-2 transition-all",
+                              selecionada
+                                ? "border-emerald-400/40 bg-emerald-500/10"
+                                : "border-white/10 bg-white/3 hover:bg-white/6"
+                            )}
+                          >
+                            <div className="flex items-start gap-3">
+                              <input
+                                type="checkbox"
+                                checked={selecionada}
+                                readOnly
+                                className="mt-1 w-4 h-4"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <p className="text-sm font-bold truncate">{instancia.nome}</p>
+                                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-white/10 text-white/60">
+                                    {nomeLauncher(instancia.launcher)}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-white/55 mt-0.5">
+                                  MC {instancia.versaoMinecraft}
+                                  {instancia.loaderType ? ` • ${instancia.loaderType}` : " • Vanilla"}
+                                  {instancia.loaderVersion ? ` ${instancia.loaderVersion}` : ""}
+                                </p>
+                                <p className="text-[10px] text-white/35 mt-1 truncate">
+                                  {instancia.caminhoOrigem}
+                                </p>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                {resultadoImportacao.length > 0 && (
+                  <div className="mt-4 border border-white/10 rounded-xl p-3 bg-white/3">
+                    <p className="text-xs font-black uppercase tracking-wide text-white/70">
+                      Resultado da importação
+                    </p>
+                    <p className="text-xs text-white/45 mt-1">
+                      {totalSucessosImportacao} de {resultadoImportacao.length} instâncias importadas.
+                    </p>
+                    <div className="mt-2 max-h-40 overflow-y-auto space-y-1.5">
+                      {resultadoImportacao.map((item) => (
+                        <div
+                          key={item.idExterno}
+                          className={cn(
+                            "text-xs px-2 py-1.5 rounded border",
+                            item.sucesso
+                              ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-200"
+                              : "border-red-400/30 bg-red-500/10 text-red-200"
+                          )}
+                        >
+                          <p className="font-bold">{item.nomeOrigem}</p>
+                          <p className="opacity-80">{item.mensagem}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-4 border-t border-white/10 flex items-center justify-between gap-3">
+                <button
+                  onClick={carregarInstanciasImportaveis}
+                  disabled={carregandoImportaveis || importandoInstancias}
+                  className="text-xs text-white/65 hover:text-white disabled:opacity-40 transition-colors"
+                >
+                  Rebuscar
+                </button>
+                <div className="flex items-center gap-2">
+                  {totalSucessosImportacao > 0 && (
+                    <button
+                      onClick={() => window.location.reload()}
+                      className="px-3 py-2 rounded-lg text-xs font-bold bg-white/10 border border-white/20 hover:bg-white/15"
+                    >
+                      Atualizar biblioteca
+                    </button>
+                  )}
+                  <button
+                    onClick={importarSelecionadas}
+                    disabled={
+                      importandoInstancias ||
+                      carregandoImportaveis ||
+                      idsSelecionadosImportacao.size === 0
+                    }
+                    className={cn(
+                      "px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-all flex items-center gap-2",
+                      importandoInstancias ||
+                        carregandoImportaveis ||
+                        idsSelecionadosImportacao.size === 0
+                        ? "bg-white/10 text-white/40 cursor-not-allowed"
+                        : "bg-emerald-500 text-black hover:bg-emerald-400"
+                    )}
+                  >
+                    {importandoInstancias ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Importando...
+                      </>
+                    ) : (
+                      <>
+                        <Upload size={12} />
+                        Importar selecionadas
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -554,13 +1087,17 @@ function GrupoWidget({
   onNomeSalvar,
   onDeletar,
   onSelect,
+  onAbrirGerenciador,
   onLaunch,
   onDelete,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
+  onExport,
+  onIniciarArrasto,
+  onMouseEnterGrupo,
+  onMouseUpGrupo,
+  onFinalizarArrasto,
+  instanciaSelecionadaId,
   instanciaAtivaId,
+  exportandoId,
 }: {
   grupo: InstanceGroup;
   instances: Instance[];
@@ -575,18 +1112,22 @@ function GrupoWidget({
   onNomeSalvar: () => void;
   onDeletar: () => void;
   onSelect: (instance: Instance) => void;
+  onAbrirGerenciador: (instance: Instance) => void;
   onLaunch: (id: string) => void;
   onDelete: (id: string) => void;
-  onDragStart: (id: string) => void;
-  onDragOver: (e: React.DragEvent) => void;
-  onDrop: () => void;
-  onDragEnd: () => void;
+  onExport: (id: string) => void;
+  onIniciarArrasto: (id: string) => void;
+  onMouseEnterGrupo: () => void;
+  onMouseUpGrupo: () => void;
+  onFinalizarArrasto: () => void;
+  instanciaSelecionadaId: string | null;
   instanciaAtivaId: string | null;
+  exportandoId: string | null;
 }) {
   return (
     <div
-      onDragOver={onDragOver}
-      onDrop={onDrop}
+      onMouseEnter={onMouseEnterGrupo}
+      onMouseUp={onMouseUpGrupo}
       className={`rounded-xl border transition-all ${
         dragOver
           ? "border-emerald-500/30 bg-emerald-500/5"
@@ -676,11 +1217,15 @@ function GrupoWidget({
                     instance={instance}
                     index={i}
                     onSelect={onSelect}
+                    onAbrirGerenciador={onAbrirGerenciador}
                     onLaunch={onLaunch}
                     onDelete={onDelete}
-                    onDragStart={onDragStart}
-                    onDragEnd={onDragEnd}
+                    onExport={onExport}
+                    onIniciarArrasto={onIniciarArrasto}
+                    onFinalizarArrasto={onFinalizarArrasto}
+                    selecionada={instance.id === instanciaSelecionadaId}
                     ativa={instance.id === instanciaAtivaId}
+                    exportando={exportandoId === instance.id}
                   />
                 ))}
               </div>
@@ -692,11 +1237,15 @@ function GrupoWidget({
                     instance={instance}
                     index={i}
                     onSelect={onSelect}
+                    onAbrirGerenciador={onAbrirGerenciador}
                     onLaunch={onLaunch}
                     onDelete={onDelete}
-                    onDragStart={onDragStart}
-                    onDragEnd={onDragEnd}
+                    onExport={onExport}
+                    onIniciarArrasto={onIniciarArrasto}
+                    onFinalizarArrasto={onFinalizarArrasto}
+                    selecionada={instance.id === instanciaSelecionadaId}
                     ativa={instance.id === instanciaAtivaId}
+                    exportando={exportandoId === instance.id}
                   />
                 ))}
               </div>
@@ -713,44 +1262,69 @@ function CardGrid({
   instance,
   index,
   onSelect,
+  onAbrirGerenciador,
   onLaunch,
   onDelete,
-  onDragStart,
-  onDragEnd,
+  onExport,
+  onIniciarArrasto,
+  onFinalizarArrasto,
+  selecionada,
   ativa,
+  exportando,
 }: {
   instance: Instance;
   index: number;
   onSelect: (i: Instance) => void;
+  onAbrirGerenciador: (i: Instance) => void;
   onLaunch: (id: string) => void;
   onDelete: (id: string) => void;
-  onDragStart: (id: string) => void;
-  onDragEnd: () => void;
+  onExport: (id: string) => void;
+  onIniciarArrasto: (id: string) => void;
+  onFinalizarArrasto: () => void;
+  selecionada: boolean;
   ativa: boolean;
+  exportando: boolean;
 }) {
   return (
     <motion.div
-      draggable
-      onDragStart={() => onDragStart(instance.id)}
-      onDragEnd={onDragEnd}
+      onMouseUp={onFinalizarArrasto}
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ delay: index * 0.02 }}
       onClick={() => onSelect(instance)}
+      onDoubleClick={() => onAbrirGerenciador(instance)}
       className={cn(
         "group relative rounded-xl p-3 cursor-pointer transition-all flex flex-col items-center text-center border",
-        ativa
-          ? "bg-emerald-500/10 border-emerald-400/30 shadow-[0_0_20px_rgba(16,185,129,0.2)]"
+        selecionada
+          ? "bg-emerald-500/10 border-emerald-400/30 shadow-realce-selecao"
           : "bg-white/3 hover:bg-white/5 border-white/5 hover:border-white/10"
       )}
     >
       {/* Grip para drag */}
-      <div className="absolute top-1.5 left-1.5 text-white/0 group-hover:text-white/15 transition-colors cursor-grab active:cursor-grabbing">
+      <div
+        onMouseDown={(evento) => {
+          if (evento.button !== 0) return;
+          evento.stopPropagation();
+          onIniciarArrasto(instance.id);
+        }}
+        className="absolute top-1.5 left-1.5 text-white/0 group-hover:text-white/15 transition-colors cursor-grab active:cursor-grabbing"
+      >
         <GripVertical size={10} />
       </div>
 
       {/* Botões de ação (hover) */}
       <div className="absolute top-1.5 right-1.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity z-10">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onExport(instance.id);
+          }}
+          disabled={exportando}
+          className="p-1 rounded-md bg-black/40 text-white/20 hover:text-blue-400 hover:bg-blue-400/10 transition-all disabled:opacity-40"
+          title="Exportar instância"
+        >
+          {exportando ? <Loader2 size={10} className="animate-spin" /> : <Download size={10} />}
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -770,6 +1344,7 @@ function CardGrid({
           <img
             src={instance.icon}
             alt={instance.name}
+            draggable={false}
             className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-200"
           />
         </div>
@@ -789,6 +1364,12 @@ function CardGrid({
       {/* Nome */}
       <h3 className="font-bold text-xs truncate w-full">{instance.name}</h3>
 
+      {selecionada && (
+        <span className="mt-1 text-[10px] rounded-full bg-emerald-500/15 px-2 py-0.5 font-bold text-emerald-300">
+          Selecionada
+        </span>
+      )}
+
       {ativa && (
         <span className="mt-1 text-[10px] rounded-full bg-emerald-500/15 px-2 py-0.5 font-bold text-emerald-300">
           Em execução
@@ -802,6 +1383,10 @@ function CardGrid({
           {instance.loader_type || instance.mc_type} {instance.version}
         </span>
       </div>
+      <div className="flex items-center gap-1 text-[10px] text-white/25 mt-0.5">
+        <Clock size={9} />
+        <span>{tempoRelativo(instance.last_played)}</span>
+      </div>
     </motion.div>
   );
 }
@@ -811,39 +1396,53 @@ function CardList({
   instance,
   index,
   onSelect,
+  onAbrirGerenciador,
   onLaunch,
   onDelete,
-  onDragStart,
-  onDragEnd,
+  onExport,
+  onIniciarArrasto,
+  onFinalizarArrasto,
+  selecionada,
   ativa,
+  exportando,
 }: {
   instance: Instance;
   index: number;
   onSelect: (i: Instance) => void;
+  onAbrirGerenciador: (i: Instance) => void;
   onLaunch: (id: string) => void;
   onDelete: (id: string) => void;
-  onDragStart: (id: string) => void;
-  onDragEnd: () => void;
+  onExport: (id: string) => void;
+  onIniciarArrasto: (id: string) => void;
+  onFinalizarArrasto: () => void;
+  selecionada: boolean;
   ativa: boolean;
+  exportando: boolean;
 }) {
   return (
     <motion.div
-      draggable
-      onDragStart={() => onDragStart(instance.id)}
-      onDragEnd={onDragEnd}
+      onMouseUp={onFinalizarArrasto}
       initial={{ opacity: 0, x: -5 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay: index * 0.02 }}
       onClick={() => onSelect(instance)}
+      onDoubleClick={() => onAbrirGerenciador(instance)}
       className={cn(
         "group flex items-center gap-3 rounded-xl px-3 py-2 cursor-pointer transition-all border",
-        ativa
-          ? "bg-emerald-500/10 border-emerald-400/30 shadow-[0_0_18px_rgba(16,185,129,0.18)]"
+        selecionada
+          ? "bg-emerald-500/10 border-emerald-400/30 shadow-realce-selecao"
           : "bg-white/2 hover:bg-white/4 border-white/3 hover:border-white/8"
       )}
     >
       {/* Grip */}
-      <div className="text-white/0 group-hover:text-white/15 transition-colors cursor-grab active:cursor-grabbing shrink-0">
+      <div
+        onMouseDown={(evento) => {
+          if (evento.button !== 0) return;
+          evento.stopPropagation();
+          onIniciarArrasto(instance.id);
+        }}
+        className="text-white/0 group-hover:text-white/15 transition-colors cursor-grab active:cursor-grabbing shrink-0"
+      >
         <GripVertical size={12} />
       </div>
 
@@ -853,6 +1452,7 @@ function CardList({
           <img
             src={instance.icon}
             alt={instance.name}
+            draggable={false}
             className="w-full h-full object-contain"
           />
         </div>
@@ -881,6 +1481,12 @@ function CardList({
         {instance.loader_type || "Vanilla"}
       </span>
 
+      {selecionada && (
+        <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0 font-bold">
+          Selecionada
+        </span>
+      )}
+
       {ativa && (
         <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0 font-bold">
           Ativa
@@ -903,6 +1509,17 @@ function CardList({
           className="p-1.5 rounded-lg text-white/20 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
         >
           <Play size={12} fill="currentColor" />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onExport(instance.id);
+          }}
+          disabled={exportando}
+          className="p-1.5 rounded-lg text-white/20 hover:text-blue-400 hover:bg-blue-400/10 transition-all disabled:opacity-40"
+          title="Exportar"
+        >
+          {exportando ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
         </button>
         <button
           onClick={(e) => {

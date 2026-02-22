@@ -503,6 +503,36 @@ impl LauncherState {
                                     if instance.last_played.as_deref() == Some("Nunca") {
                                         instance.last_played = None;
                                     }
+
+                                    // Para instâncias de modpack antigas, recuperar ícone real salvo em modpack.json.
+                                    let icone_generico = instance
+                                        .icon
+                                        .as_deref()
+                                        .map(|icone| icone.contains("api.dicebear.com"))
+                                        .unwrap_or(true);
+                                    if icone_generico {
+                                        let caminho_modpack = entry.path().join("modpack.json");
+                                        if caminho_modpack.exists() {
+                                            if let Ok(conteudo_modpack) =
+                                                std::fs::read_to_string(&caminho_modpack)
+                                            {
+                                                if let Ok(json_modpack) =
+                                                    serde_json::from_str::<serde_json::Value>(
+                                                        &conteudo_modpack,
+                                                    )
+                                                {
+                                                    if let Some(icone_modpack) = json_modpack["icon"]
+                                                        .as_str()
+                                                        .map(|valor| valor.trim().to_string())
+                                                        .filter(|valor| !valor.is_empty())
+                                                    {
+                                                        instance.icon = Some(icone_modpack);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     if !ids_vistos.insert(id.clone()) {
                                         println!(
                                             "Instância duplicada ignorada (id repetido): {} em {:?}",

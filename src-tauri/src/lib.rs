@@ -15,7 +15,7 @@ use tauri::State;
 use urlencoding;
 
 // Constantes das APIs
-const CURSEFORGE_API_KEY_FALLBACK: &str = "$2a$10$3tlPo5aXjpTEHidlj1KYK.daU7MRunI/B9lFTYomfO4v6Zpwd/BRK";
+const CURSEFORGE_API_KEY_FALLBACK: &str = "$2a$10$wuAJuNZuted3NORVmpgUC.m8sI.pv1tOPKZyBgLFGjxFp/br0lZCC";
 const CURSEFORGE_API_BASE: &str = "https://api.curseforge.com/v1";
 const MODRINTH_API_BASE: &str = "https://api.modrinth.com/v2";
 const DISCORD_RPC_APP_ID: &str = "1380421346605138041";
@@ -162,6 +162,30 @@ struct PayloadVincularMinecraftSocialLauncherApi {
 struct CacheNoticiasMinecraft {
     pub gerado_em_ms: u64,
     pub itens: Vec<NoticiaMinecraft>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct InstanciaImportavelExterna {
+    pub id_externo: String,
+    pub launcher: String,
+    pub nome: String,
+    pub versao_minecraft: String,
+    pub loader_type: Option<String>,
+    pub loader_version: Option<String>,
+    pub caminho_origem: String,
+    pub caminho_jogo: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ResultadoImportacaoInstancia {
+    pub id_externo: String,
+    pub launcher: String,
+    pub nome_origem: String,
+    pub sucesso: bool,
+    pub instancia_id: Option<String>,
+    pub mensagem: String,
 }
 
 fn normalizar_api_base_url(api_base_url: &str) -> Result<String, String> {
@@ -673,27 +697,29 @@ fn normalizar_token_social(access_token: &str) -> Result<String, String> {
     Ok(token)
 }
 
+fn normalizar_chave_api_curseforge(valor: String) -> Option<String> {
+    let chave = valor.trim().to_string();
+    if chave.is_empty() {
+        None
+    } else {
+        Some(chave)
+    }
+}
+
 fn obter_chave_api_curseforge() -> Option<String> {
     let chave_env = std::env::var("CURSEFORGE_API_KEY")
         .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
+        .and_then(normalizar_chave_api_curseforge);
 
-    chave_env.or_else(|| {
-        let fallback = CURSEFORGE_API_KEY_FALLBACK.trim();
-        if fallback.is_empty() {
-            None
-        } else {
-            Some(fallback.to_string())
-        }
-    })
+    chave_env.or_else(|| normalizar_chave_api_curseforge(CURSEFORGE_API_KEY_FALLBACK.to_string()))
 }
 
 fn anexar_headers_curseforge(
     request: reqwest::RequestBuilder,
 ) -> Result<reqwest::RequestBuilder, String> {
     let chave = obter_chave_api_curseforge().ok_or_else(|| {
-        "Chave da API CurseForge ausente. Defina CURSEFORGE_API_KEY no ambiente.".to_string()
+        "Chave da API CurseForge indisponível. Defina CURSEFORGE_API_KEY no ambiente."
+            .to_string()
     })?;
 
     Ok(request
@@ -761,6 +787,1231 @@ async fn get_minecraft_versions() -> Result<VersionManifest, String> {
 #[tauri::command]
 fn get_instances(state: State<LauncherState>) -> Result<Vec<Instance>, String> {
     state.get_instances().map_err(|e| e.to_string())
+}
+
+fn texto_json_caminho(valor: &serde_json::Value, caminho: &[&str]) -> Option<String> {
+    let mut atual = valor;
+    for chave in caminho {
+        atual = atual.get(*chave)?;
+    }
+    atual
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn parsear_cfg_simples(caminho: &std::path::Path) -> std::collections::HashMap<String, String> {
+    let mut resultado = std::collections::HashMap::new();
+    let conteudo = match std::fs::read_to_string(caminho) {
+        Ok(valor) => valor,
+        Err(_) => return resultado,
+    };
+
+    for linha in conteudo.lines() {
+        let linha = linha.trim();
+        if linha.is_empty() || linha.starts_with('#') || linha.starts_with(';') {
+            continue;
+        }
+
+        let mut partes = linha.splitn(2, '=');
+        let chave = partes.next().unwrap_or("").trim();
+        let valor = partes.next().unwrap_or("").trim();
+        if chave.is_empty() {
+            continue;
+        }
+        resultado.insert(chave.to_string(), valor.to_string());
+    }
+
+    resultado
+}
+
+fn detectar_loader_normalizado(loader: Option<&str>) -> Option<String> {
+    let bruto = loader?.trim().to_lowercase();
+    if bruto.is_empty() {
+        return None;
+    }
+
+    if bruto.contains("neoforge") || bruto.contains("neoforged") {
+        return Some("neoforge".to_string());
+    }
+    if bruto.contains("fabric") {
+        return Some("fabric".to_string());
+    }
+    if bruto.contains("quilt") {
+        return Some("quilt".to_string());
+    }
+    if bruto.contains("forge") {
+        return Some("forge".to_string());
+    }
+    if bruto.contains("vanilla") {
+        return Some("vanilla".to_string());
+    }
+
+    Some(bruto)
+}
+
+fn rotulo_loader(loader_normalizado: Option<&str>) -> Option<String> {
+    match loader_normalizado {
+        Some("forge") => Some("Forge".to_string()),
+        Some("fabric") => Some("Fabric".to_string()),
+        Some("neoforge") => Some("NeoForge".to_string()),
+        Some("quilt") => Some("Quilt".to_string()),
+        Some("vanilla") => Some("Vanilla".to_string()),
+        Some(outro) => Some(outro.to_string()),
+        None => None,
+    }
+}
+
+fn detectar_caminho_jogo(base: &std::path::Path) -> std::path::PathBuf {
+    let candidatos = [base.join(".minecraft"), base.join("minecraft"), base.to_path_buf()];
+    candidatos
+        .into_iter()
+        .find(|caminho| caminho.exists() && caminho.is_dir())
+        .unwrap_or_else(|| base.to_path_buf())
+}
+
+fn listar_instancias_prism() -> Vec<InstanciaImportavelExterna> {
+    let Some(app_data) = std::env::var("APPDATA").ok() else {
+        return Vec::new();
+    };
+
+    let pasta_instancias = std::path::PathBuf::from(app_data)
+        .join("PrismLauncher")
+        .join("instances");
+    if !pasta_instancias.exists() {
+        return Vec::new();
+    }
+
+    let mut resultados = Vec::new();
+    let entradas = match std::fs::read_dir(&pasta_instancias) {
+        Ok(valor) => valor,
+        Err(_) => return resultados,
+    };
+
+    for entrada in entradas.flatten() {
+        if !entrada.path().is_dir() {
+            continue;
+        }
+
+        let caminho_origem = entrada.path();
+        let caminho_cfg = caminho_origem.join("instance.cfg");
+        if !caminho_cfg.exists() {
+            continue;
+        }
+
+        let cfg = parsear_cfg_simples(&caminho_cfg);
+        let nome = cfg
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| entrada.file_name().to_string_lossy().to_string());
+
+        let mut versao_minecraft = String::new();
+        let mut loader_tipo: Option<String> = None;
+        let mut loader_versao: Option<String> = None;
+
+        let caminho_mmc_pack = caminho_origem.join("mmc-pack.json");
+        if caminho_mmc_pack.exists() {
+            if let Ok(conteudo) = std::fs::read_to_string(&caminho_mmc_pack) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&conteudo) {
+                    if let Some(componentes) = json.get("components").and_then(|v| v.as_array()) {
+                        for componente in componentes {
+                            let uid = texto_json_caminho(componente, &["uid"]).unwrap_or_default();
+                            let versao = texto_json_caminho(componente, &["version"]);
+
+                            match uid.as_str() {
+                                "net.minecraft" => {
+                                    if versao_minecraft.is_empty() {
+                                        versao_minecraft = versao.unwrap_or_default();
+                                    }
+                                }
+                                "net.minecraftforge" => {
+                                    loader_tipo = Some("Forge".to_string());
+                                    loader_versao = versao;
+                                }
+                                "net.fabricmc.fabric-loader" => {
+                                    loader_tipo = Some("Fabric".to_string());
+                                    loader_versao = versao;
+                                }
+                                "net.neoforged" => {
+                                    loader_tipo = Some("NeoForge".to_string());
+                                    loader_versao = versao;
+                                }
+                                "org.quiltmc.quilt-loader" => {
+                                    loader_tipo = Some("Quilt".to_string());
+                                    loader_versao = versao;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if versao_minecraft.trim().is_empty() {
+            continue;
+        }
+
+        let caminho_jogo = detectar_caminho_jogo(&caminho_origem);
+        resultados.push(InstanciaImportavelExterna {
+            id_externo: format!("prism:{}", caminho_origem.to_string_lossy()),
+            launcher: "prism".to_string(),
+            nome,
+            versao_minecraft,
+            loader_type: loader_tipo,
+            loader_version: loader_versao,
+            caminho_origem: caminho_origem.to_string_lossy().to_string(),
+            caminho_jogo: caminho_jogo.to_string_lossy().to_string(),
+        });
+    }
+
+    resultados
+}
+
+fn listar_instancias_modrinth_por_profile_json(
+    pasta_base: &std::path::Path,
+) -> Vec<InstanciaImportavelExterna> {
+    let mut resultados = Vec::new();
+    let entradas = match std::fs::read_dir(pasta_base) {
+        Ok(valor) => valor,
+        Err(_) => return resultados,
+    };
+
+    for entrada in entradas.flatten() {
+        if !entrada.path().is_dir() {
+            continue;
+        }
+
+        let caminho_origem = entrada.path();
+        let caminho_profile = caminho_origem.join("profile.json");
+        if !caminho_profile.exists() {
+            continue;
+        }
+
+        let conteudo = match std::fs::read_to_string(&caminho_profile) {
+            Ok(valor) => valor,
+            Err(_) => continue,
+        };
+        let json = match serde_json::from_str::<serde_json::Value>(&conteudo) {
+            Ok(valor) => valor,
+            Err(_) => continue,
+        };
+
+        let nome = texto_json_caminho(&json, &["metadata", "name"])
+            .or_else(|| texto_json_caminho(&json, &["name"]))
+            .unwrap_or_else(|| entrada.file_name().to_string_lossy().to_string());
+
+        let versao_minecraft = texto_json_caminho(&json, &["metadata", "game_version"])
+            .or_else(|| texto_json_caminho(&json, &["game_version"]))
+            .unwrap_or_default();
+        if versao_minecraft.is_empty() {
+            continue;
+        }
+
+        let loader_normalizado = detectar_loader_normalizado(
+            texto_json_caminho(&json, &["metadata", "loader"])
+                .or_else(|| texto_json_caminho(&json, &["loader"]))
+                .as_deref(),
+        );
+        let loader_type = rotulo_loader(loader_normalizado.as_deref());
+        let loader_version = texto_json_caminho(&json, &["metadata", "loader_version"])
+            .or_else(|| texto_json_caminho(&json, &["loader_version"]));
+
+        let caminho_jogo = texto_json_caminho(&json, &["path"])
+            .map(std::path::PathBuf::from)
+            .filter(|c| c.exists() && c.is_dir())
+            .unwrap_or_else(|| caminho_origem.clone());
+
+        resultados.push(InstanciaImportavelExterna {
+            id_externo: format!("modrinth:{}", caminho_origem.to_string_lossy()),
+            launcher: "modrinth".to_string(),
+            nome,
+            versao_minecraft,
+            loader_type,
+            loader_version,
+            caminho_origem: caminho_origem.to_string_lossy().to_string(),
+            caminho_jogo: caminho_jogo.to_string_lossy().to_string(),
+        });
+    }
+
+    resultados
+}
+
+fn listar_instancias_modrinth_por_banco(
+    pasta_base: &std::path::Path,
+) -> Vec<InstanciaImportavelExterna> {
+    let mut resultados = Vec::new();
+    let Some(pasta_app) = pasta_base.parent() else {
+        return resultados;
+    };
+    let caminho_banco = pasta_app.join("app.db");
+    if !caminho_banco.exists() {
+        return resultados;
+    }
+
+    let conexao = match rusqlite::Connection::open_with_flags(
+        &caminho_banco,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(_) => return resultados,
+    };
+
+    let mut consulta = match conexao.prepare(
+        "SELECT path, name, game_version, mod_loader, mod_loader_version FROM profiles",
+    ) {
+        Ok(c) => c,
+        Err(_) => return resultados,
+    };
+
+    let linhas = match consulta.query_map([], |linha| {
+        let caminho_perfil: String = linha.get(0)?;
+        let nome: String = linha.get(1)?;
+        let versao_minecraft: String = linha.get(2)?;
+        let mod_loader: String = linha.get(3)?;
+        let mod_loader_version: Option<String> = linha.get(4)?;
+        Ok((
+            caminho_perfil,
+            nome,
+            versao_minecraft,
+            mod_loader,
+            mod_loader_version,
+        ))
+    }) {
+        Ok(l) => l,
+        Err(_) => return resultados,
+    };
+
+    for linha in linhas.flatten() {
+        let (caminho_perfil, nome_banco, versao_minecraft, mod_loader, mod_loader_version) = linha;
+        if versao_minecraft.trim().is_empty() {
+            continue;
+        }
+
+        let caminho_origem = {
+            let caminho = std::path::PathBuf::from(caminho_perfil.trim());
+            if caminho.is_absolute() {
+                caminho
+            } else {
+                pasta_base.join(caminho)
+            }
+        };
+
+        if !caminho_origem.exists() || !caminho_origem.is_dir() {
+            continue;
+        }
+
+        let nome = if nome_banco.trim().is_empty() {
+            caminho_origem
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "Instância Modrinth".to_string())
+        } else {
+            nome_banco
+        };
+
+        let loader_normalizado = detectar_loader_normalizado(Some(&mod_loader));
+        let loader_type = rotulo_loader(loader_normalizado.as_deref());
+        let loader_version = mod_loader_version
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
+        resultados.push(InstanciaImportavelExterna {
+            id_externo: format!("modrinth:{}", caminho_origem.to_string_lossy()),
+            launcher: "modrinth".to_string(),
+            nome,
+            versao_minecraft: versao_minecraft.trim().to_string(),
+            loader_type,
+            loader_version,
+            caminho_origem: caminho_origem.to_string_lossy().to_string(),
+            caminho_jogo: caminho_origem.to_string_lossy().to_string(),
+        });
+    }
+
+    resultados
+}
+
+fn listar_instancias_modrinth() -> Vec<InstanciaImportavelExterna> {
+    let Some(app_data) = std::env::var("APPDATA").ok() else {
+        return Vec::new();
+    };
+
+    let pastas_base = vec![
+        std::path::PathBuf::from(&app_data)
+            .join("com.modrinth.theseus")
+            .join("profiles"),
+        std::path::PathBuf::from(&app_data)
+            .join("ModrinthApp")
+            .join("profiles"),
+        std::path::PathBuf::from(&app_data).join("theseus").join("profiles"),
+    ];
+
+    let mut resultados = Vec::new();
+    for pasta_base in pastas_base {
+        if !pasta_base.exists() {
+            continue;
+        }
+
+        resultados.extend(listar_instancias_modrinth_por_profile_json(&pasta_base));
+        resultados.extend(listar_instancias_modrinth_por_banco(&pasta_base));
+    }
+
+    resultados
+}
+
+fn extrair_loader_curseforge(
+    base_mod_loader: &serde_json::Value,
+    versao_minecraft: &str,
+) -> (Option<String>, Option<String>) {
+    let nome = texto_json_caminho(base_mod_loader, &["name"]).unwrap_or_default();
+    let maven = texto_json_caminho(base_mod_loader, &["mavenVersionString"]).unwrap_or_default();
+    let combinado = format!("{} {}", nome, maven);
+    let loader_normalizado = detectar_loader_normalizado(Some(&combinado));
+    let loader_type = rotulo_loader(loader_normalizado.as_deref());
+
+    let mut loader_version = None;
+
+    if let Some(parte_maven) = maven.split(':').next_back() {
+        let texto = parte_maven.trim();
+        if !texto.is_empty() {
+            loader_version = Some(texto.to_string());
+        }
+    }
+
+    if loader_version.is_none() && !nome.trim().is_empty() {
+        let nome_lower = nome.to_lowercase();
+        let prefixos = ["forge-", "fabric-", "fabric_loader-", "neoforge-", "quilt-"];
+        for prefixo in prefixos {
+            if nome_lower.starts_with(prefixo) {
+                loader_version = Some(nome[prefixo.len()..].to_string());
+                break;
+            }
+        }
+    }
+
+    if let Some(loader) = loader_normalizado {
+        if loader == "forge" {
+            if let Some(ref mut versao_loader) = loader_version {
+                if !versao_loader.starts_with(&format!("{}-", versao_minecraft))
+                    && !versao_loader.starts_with("1.")
+                {
+                    *versao_loader = format!("{}-{}", versao_minecraft, versao_loader);
+                }
+            }
+        }
+    }
+
+    (loader_type, loader_version)
+}
+
+fn listar_instancias_curseforge() -> Vec<InstanciaImportavelExterna> {
+    let Some(user_profile) = std::env::var("USERPROFILE").ok() else {
+        return Vec::new();
+    };
+
+    let pastas_base = vec![
+        std::path::PathBuf::from(&user_profile)
+            .join("curseforge")
+            .join("minecraft")
+            .join("Instances"),
+        std::path::PathBuf::from(&user_profile)
+            .join("Documents")
+            .join("Curse")
+            .join("Minecraft")
+            .join("Instances"),
+    ];
+
+    let mut resultados = Vec::new();
+
+    for pasta_base in pastas_base {
+        if !pasta_base.exists() {
+            continue;
+        }
+
+        let entradas = match std::fs::read_dir(&pasta_base) {
+            Ok(valor) => valor,
+            Err(_) => continue,
+        };
+
+        for entrada in entradas.flatten() {
+            if !entrada.path().is_dir() {
+                continue;
+            }
+
+            let caminho_origem = entrada.path();
+            let caminho_instancia = caminho_origem.join("minecraftinstance.json");
+            if !caminho_instancia.exists() {
+                continue;
+            }
+
+            let conteudo = match std::fs::read_to_string(&caminho_instancia) {
+                Ok(valor) => valor,
+                Err(_) => continue,
+            };
+            let json = match serde_json::from_str::<serde_json::Value>(&conteudo) {
+                Ok(valor) => valor,
+                Err(_) => continue,
+            };
+
+            let nome = texto_json_caminho(&json, &["name"])
+                .unwrap_or_else(|| entrada.file_name().to_string_lossy().to_string());
+            let versao_minecraft = texto_json_caminho(&json, &["gameVersion"])
+                .or_else(|| texto_json_caminho(&json, &["minecraftVersion"]))
+                .unwrap_or_default();
+            if versao_minecraft.is_empty() {
+                continue;
+            }
+
+            let (loader_type, loader_version) =
+                extrair_loader_curseforge(&json["baseModLoader"], &versao_minecraft);
+            let caminho_jogo = detectar_caminho_jogo(&caminho_origem);
+
+            resultados.push(InstanciaImportavelExterna {
+                id_externo: format!("curseforge:{}", caminho_origem.to_string_lossy()),
+                launcher: "curseforge".to_string(),
+                nome,
+                versao_minecraft,
+                loader_type,
+                loader_version,
+                caminho_origem: caminho_origem.to_string_lossy().to_string(),
+                caminho_jogo: caminho_jogo.to_string_lossy().to_string(),
+            });
+        }
+    }
+
+    resultados
+}
+
+#[tauri::command]
+fn listar_instancias_importaveis() -> Result<Vec<InstanciaImportavelExterna>, String> {
+    let mut resultados = Vec::new();
+    resultados.extend(listar_instancias_prism());
+    resultados.extend(listar_instancias_modrinth());
+    resultados.extend(listar_instancias_curseforge());
+
+    let mut caminhos_vistos = std::collections::HashSet::new();
+    resultados.retain(|instancia| {
+        caminhos_vistos.insert(instancia.caminho_origem.trim().to_lowercase())
+    });
+
+    resultados.sort_by(|a, b| {
+        a.launcher
+            .cmp(&b.launcher)
+            .then_with(|| a.nome.to_lowercase().cmp(&b.nome.to_lowercase()))
+    });
+
+    Ok(resultados)
+}
+
+fn copiar_arquivo_se_existir(
+    origem: &std::path::Path,
+    destino: &std::path::Path,
+) -> Result<(), String> {
+    if !origem.exists() || !origem.is_file() {
+        return Ok(());
+    }
+
+    if let Some(pai) = destino.parent() {
+        std::fs::create_dir_all(pai).map_err(|e| format!("Erro ao criar pasta destino: {}", e))?;
+    }
+    std::fs::copy(origem, destino).map_err(|e| format!("Erro ao copiar arquivo: {}", e))?;
+    Ok(())
+}
+
+fn copiar_diretorio_recursivo(
+    origem: &std::path::Path,
+    destino: &std::path::Path,
+) -> Result<(), String> {
+    if !origem.exists() || !origem.is_dir() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(destino).map_err(|e| format!("Erro ao criar pasta destino: {}", e))?;
+    let entradas = std::fs::read_dir(origem).map_err(|e| format!("Erro ao ler pasta origem: {}", e))?;
+
+    for entrada in entradas.flatten() {
+        let tipo = match entrada.file_type() {
+            Ok(valor) => valor,
+            Err(_) => continue,
+        };
+        if tipo.is_symlink() {
+            continue;
+        }
+
+        let origem_item = entrada.path();
+        let destino_item = destino.join(entrada.file_name());
+
+        if tipo.is_dir() {
+            copiar_diretorio_recursivo(&origem_item, &destino_item)?;
+        } else if tipo.is_file() {
+            copiar_arquivo_se_existir(&origem_item, &destino_item)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn copiar_conteudo_instancia_importada(
+    caminho_jogo_origem: &std::path::Path,
+    pasta_instancia_destino: &std::path::Path,
+) -> Result<(), String> {
+    if !caminho_jogo_origem.exists() || !caminho_jogo_origem.is_dir() {
+        return Err("Pasta do jogo da instância importada não encontrada.".to_string());
+    }
+
+    let pastas_para_copiar = [
+        "mods",
+        "resourcepacks",
+        "shaderpacks",
+        "saves",
+        "config",
+        "defaultconfigs",
+        "kubejs",
+        "scripts",
+        "journeymap",
+        "xaeromap",
+        "XaeroWaypoints",
+        "servers",
+    ];
+    for pasta in pastas_para_copiar {
+        let origem = caminho_jogo_origem.join(pasta);
+        let destino = pasta_instancia_destino.join(pasta);
+        copiar_diretorio_recursivo(&origem, &destino)?;
+    }
+
+    let arquivos_para_copiar = [
+        "options.txt",
+        "optionsof.txt",
+        "optionsshaders.txt",
+        "servers.dat",
+        "usercache.json",
+    ];
+    for arquivo in arquivos_para_copiar {
+        let origem = caminho_jogo_origem.join(arquivo);
+        let destino = pasta_instancia_destino.join(arquivo);
+        copiar_arquivo_se_existir(&origem, &destino)?;
+    }
+
+    Ok(())
+}
+
+fn gerar_nome_instancia_unico(state: &LauncherState, nome_base: &str) -> String {
+    let nome_base = if nome_base.trim().is_empty() {
+        "Instância importada".to_string()
+    } else {
+        nome_base.trim().to_string()
+    };
+
+    let mut ids_existentes: std::collections::HashSet<String> = state
+        .get_instances()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|instancia| instancia.id)
+        .collect();
+
+    if let Ok(entradas) = std::fs::read_dir(&state.instances_path) {
+        for entrada in entradas.flatten() {
+            if entrada.path().is_dir() {
+                ids_existentes.insert(entrada.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+
+    let mut nome_tentativa = nome_base.clone();
+    let mut contador = 2;
+    loop {
+        let id_tentativa = normalizar_nome_pasta_instancia(&nome_tentativa);
+        if !ids_existentes.contains(&id_tentativa) {
+            return nome_tentativa;
+        }
+        nome_tentativa = format!("{} ({})", nome_base, contador);
+        contador += 1;
+    }
+}
+
+async fn resolver_versao_loader_importacao(
+    loader_normalizado: &str,
+    versao_minecraft: &str,
+    versao_sugerida: Option<&str>,
+) -> Result<String, String> {
+    if let Some(versao) = versao_sugerida.map(|v| v.trim()).filter(|v| !v.is_empty()) {
+        if loader_normalizado == "forge" {
+            if versao.starts_with(&format!("{}-", versao_minecraft)) {
+                return Ok(versao.to_string());
+            }
+            if versao.chars().next().is_some_and(|c| c.is_ascii_digit()) && !versao.starts_with("1.")
+            {
+                return Ok(format!("{}-{}", versao_minecraft, versao));
+            }
+        }
+        return Ok(versao.to_string());
+    }
+
+    let resposta = get_loader_versions(loader_normalizado.to_string()).await?;
+    let versoes: Vec<String> = resposta.versions.into_iter().map(|v| v.version).collect();
+    if loader_normalizado == "forge" {
+        if let Some(versao) = versoes
+            .iter()
+            .find(|versao| versao.starts_with(&format!("{}-", versao_minecraft)))
+            .cloned()
+        {
+            return Ok(versao);
+        }
+    }
+
+    versoes
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("Nenhuma versão disponível para loader {}.", loader_normalizado))
+}
+
+async fn criar_instancia_base_importada(
+    state: &LauncherState,
+    nome_instancia: &str,
+    versao_minecraft: &str,
+    loader_type: Option<&str>,
+    loader_version: Option<&str>,
+) -> Result<Instance, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao buscar manifesto Minecraft: {}", e))?;
+    let manifest = res
+        .json::<VersionManifest>()
+        .await
+        .map_err(|e| format!("Erro ao ler manifesto Minecraft: {}", e))?;
+
+    let version_entry = manifest
+        .versions
+        .iter()
+        .find(|v| v.id == versao_minecraft)
+        .ok_or_else(|| format!("Versão Minecraft '{}' não encontrada.", versao_minecraft))?;
+
+    let res = client
+        .get(&version_entry.url)
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao buscar detalhes da versão: {}", e))?;
+    let details = res
+        .json::<VersionDetail>()
+        .await
+        .map_err(|e| format!("Erro ao ler detalhes da versão: {}", e))?;
+
+    let id = normalizar_nome_pasta_instancia(nome_instancia);
+    let instance_path = state.instances_path.join(&id);
+    if !instance_path.exists() {
+        std::fs::create_dir_all(&instance_path).map_err(|e| e.to_string())?;
+    }
+
+    download_instance_files(&instance_path, &details).await?;
+
+    let loader_normalizado = detectar_loader_normalizado(loader_type);
+    let (loader_type_salvo, loader_version_final, mc_type) = match loader_normalizado.as_deref() {
+        Some("forge") => {
+            let versao_loader = resolver_versao_loader_importacao(
+                "forge",
+                versao_minecraft,
+                loader_version,
+            )
+            .await?;
+            install_forge_loader(&instance_path, versao_minecraft, &versao_loader).await?;
+            (
+                Some("Forge".to_string()),
+                Some(versao_loader),
+                "forge".to_string(),
+            )
+        }
+        Some("fabric") => {
+            let versao_loader = resolver_versao_loader_importacao(
+                "fabric",
+                versao_minecraft,
+                loader_version,
+            )
+            .await?;
+            install_fabric_loader(&instance_path, versao_minecraft, &versao_loader).await?;
+            (
+                Some("Fabric".to_string()),
+                Some(versao_loader),
+                "fabric".to_string(),
+            )
+        }
+        Some("neoforge") => {
+            let versao_loader = resolver_versao_loader_importacao(
+                "neoforge",
+                versao_minecraft,
+                loader_version,
+            )
+            .await?;
+            install_neoforge_loader(&instance_path, versao_minecraft, &versao_loader).await?;
+            (
+                Some("NeoForge".to_string()),
+                Some(versao_loader),
+                "neoforge".to_string(),
+            )
+        }
+        Some("quilt") => {
+            return Err("Instâncias com Quilt ainda não são suportadas no importador.".to_string());
+        }
+        Some("vanilla") | None => (Some("Vanilla".to_string()), None, "vanilla".to_string()),
+        Some(outro) => {
+            return Err(format!(
+                "Loader '{}' ainda não é suportado no importador.",
+                outro
+            ))
+        }
+    };
+
+    let instance = Instance {
+        id: id.clone(),
+        name: nome_instancia.to_string(),
+        version: versao_minecraft.to_string(),
+        mc_type,
+        loader_type: loader_type_salvo,
+        loader_version: loader_version_final,
+        icon: Some(format!(
+            "https://api.dicebear.com/9.x/shapes/svg?seed={}",
+            id
+        )),
+        created: chrono::Utc::now().to_rfc3339(),
+        last_played: None,
+        path: instance_path.clone(),
+        java_args: None,
+        mc_args: None,
+        memory: None,
+        width: None,
+        height: None,
+    };
+
+    let config_path = instance_path.join("instance.json");
+    let content = serde_json::to_string_pretty(&instance).map_err(|e| e.to_string())?;
+    std::fs::write(config_path, content).map_err(|e| e.to_string())?;
+
+    let version_manifest_path = instance_path.join("version_manifest.json");
+    let version_content = serde_json::to_string_pretty(&details).map_err(|e| e.to_string())?;
+    std::fs::write(version_manifest_path, version_content).map_err(|e| e.to_string())?;
+
+    Ok(instance)
+}
+
+#[tauri::command]
+async fn importar_instancias_externas(
+    instancias: Vec<InstanciaImportavelExterna>,
+    state: State<'_, LauncherState>,
+) -> Result<Vec<ResultadoImportacaoInstancia>, String> {
+    if instancias.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut resultados = Vec::new();
+
+    for instancia in instancias {
+        let nome_unico = gerar_nome_instancia_unico(&state, &instancia.nome);
+        let resultado = match criar_instancia_base_importada(
+            &state,
+            &nome_unico,
+            instancia.versao_minecraft.trim(),
+            instancia.loader_type.as_deref(),
+            instancia.loader_version.as_deref(),
+        )
+        .await
+        {
+            Ok(instancia_criada) => {
+                let caminho_jogo = std::path::PathBuf::from(instancia.caminho_jogo.trim());
+                let mensagem_copia =
+                    copiar_conteudo_instancia_importada(&caminho_jogo, &instancia_criada.path);
+                if let Err(erro_copia) = mensagem_copia {
+                    ResultadoImportacaoInstancia {
+                        id_externo: instancia.id_externo.clone(),
+                        launcher: instancia.launcher.clone(),
+                        nome_origem: instancia.nome.clone(),
+                        sucesso: true,
+                        instancia_id: Some(instancia_criada.id.clone()),
+                        mensagem: format!(
+                            "Instância importada, mas houve falha ao copiar parte dos arquivos: {}",
+                            erro_copia
+                        ),
+                    }
+                } else {
+                    ResultadoImportacaoInstancia {
+                        id_externo: instancia.id_externo.clone(),
+                        launcher: instancia.launcher.clone(),
+                        nome_origem: instancia.nome.clone(),
+                        sucesso: true,
+                        instancia_id: Some(instancia_criada.id.clone()),
+                        mensagem: "Instância importada com sucesso.".to_string(),
+                    }
+                }
+            }
+            Err(erro) => ResultadoImportacaoInstancia {
+                id_externo: instancia.id_externo.clone(),
+                launcher: instancia.launcher.clone(),
+                nome_origem: instancia.nome.clone(),
+                sucesso: false,
+                instancia_id: None,
+                mensagem: erro,
+            },
+        };
+        resultados.push(resultado);
+    }
+
+    Ok(resultados)
+}
+
+// ===== EXPORTAÇÃO / IMPORTAÇÃO DE INSTÂNCIAS (ZIP) =====
+
+/// Estrutura do manifesto de exportação do Dome Launcher
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ManifestoExportacao {
+    pub dome_launcher_version: String,
+    pub nome: String,
+    pub versao_minecraft: String,
+    pub mc_type: String,
+    pub loader_type: Option<String>,
+    pub loader_version: Option<String>,
+    pub exportado_em: String,
+    pub icon: Option<String>,
+}
+
+/// Resultado da exportação
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ResultadoExportacao {
+    pub sucesso: bool,
+    pub caminho_arquivo: Option<String>,
+    pub mensagem: String,
+}
+
+/// Resultado da importação por arquivo
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ResultadoImportacaoArquivo {
+    pub sucesso: bool,
+    pub instancia_id: Option<String>,
+    pub mensagem: String,
+}
+
+/// Adiciona diretório inteiro ao zip recursivamente
+fn adicionar_diretorio_ao_zip(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    caminho: &std::path::Path,
+    prefixo_no_zip: &str,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    if !caminho.exists() || !caminho.is_dir() {
+        return Ok(());
+    }
+
+    let entradas = std::fs::read_dir(caminho)
+        .map_err(|e| format!("Erro ao ler diretório {}: {}", caminho.display(), e))?;
+
+    for entrada in entradas.flatten() {
+        let tipo = match entrada.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if tipo.is_symlink() {
+            continue;
+        }
+
+        let nome = entrada.file_name().to_string_lossy().to_string();
+        let caminho_no_zip = if prefixo_no_zip.is_empty() {
+            nome.clone()
+        } else {
+            format!("{}/{}", prefixo_no_zip, nome)
+        };
+
+        if tipo.is_dir() {
+            adicionar_diretorio_ao_zip(zip, &entrada.path(), &caminho_no_zip, options)?;
+        } else if tipo.is_file() {
+            let dados = std::fs::read(&entrada.path())
+                .map_err(|e| format!("Erro ao ler arquivo {}: {}", entrada.path().display(), e))?;
+            zip.start_file(&caminho_no_zip, options)
+                .map_err(|e| format!("Erro ao adicionar {} ao zip: {}", caminho_no_zip, e))?;
+            use std::io::Write;
+            zip.write_all(&dados)
+                .map_err(|e| format!("Erro ao escrever {} no zip: {}", caminho_no_zip, e))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn exportar_instancia(
+    instance_id: String,
+    destino: Option<String>,
+    state: State<'_, LauncherState>,
+) -> Result<ResultadoExportacao, String> {
+    let instancia = obter_instancia_por_id(&state, &instance_id)?;
+
+    // Diretório de destino: fornecido ou Downloads do usuário
+    let pasta_destino = if let Some(ref dest) = destino {
+        std::path::PathBuf::from(dest)
+    } else {
+        let downloads = std::env::var("USERPROFILE")
+            .map(|perfil| std::path::PathBuf::from(perfil).join("Downloads"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        downloads
+    };
+
+    if !pasta_destino.exists() {
+        std::fs::create_dir_all(&pasta_destino)
+            .map_err(|e| format!("Erro ao criar pasta de destino: {}", e))?;
+    }
+
+    // Nome sanitizado para arquivo
+    let nome_arquivo = format!(
+        "{}.dome",
+        instancia.name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+            .collect::<String>()
+            .trim()
+            .replace(' ', "_")
+    );
+
+    let caminho_zip = pasta_destino.join(&nome_arquivo);
+
+    // Criar manifesto
+    let manifesto = ManifestoExportacao {
+        dome_launcher_version: "1.0".to_string(),
+        nome: instancia.name.clone(),
+        versao_minecraft: instancia.version.clone(),
+        mc_type: instancia.mc_type.clone(),
+        loader_type: instancia.loader_type.clone(),
+        loader_version: instancia.loader_version.clone(),
+        exportado_em: chrono::Utc::now().to_rfc3339(),
+        icon: instancia.icon.clone(),
+    };
+
+    // Criar o zip
+    let arquivo_zip = std::fs::File::create(&caminho_zip)
+        .map_err(|e| format!("Erro ao criar arquivo zip: {}", e))?;
+    let mut zip = zip::ZipWriter::new(arquivo_zip);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // Adicionar manifesto
+    let manifesto_json = serde_json::to_string_pretty(&manifesto)
+        .map_err(|e| format!("Erro ao serializar manifesto: {}", e))?;
+    zip.start_file("dome_manifest.json", options)
+        .map_err(|e| format!("Erro ao criar manifesto no zip: {}", e))?;
+    use std::io::Write;
+    zip.write_all(manifesto_json.as_bytes())
+        .map_err(|e| format!("Erro ao escrever manifesto: {}", e))?;
+
+    // Adicionar instance.json original
+    let instance_json_path = instancia.path.join("instance.json");
+    if instance_json_path.exists() {
+        let dados = std::fs::read(&instance_json_path)
+            .map_err(|e| format!("Erro ao ler instance.json: {}", e))?;
+        zip.start_file("instance.json", options)
+            .map_err(|e| format!("Erro ao adicionar instance.json: {}", e))?;
+        zip.write_all(&dados)
+            .map_err(|e| format!("Erro ao escrever instance.json: {}", e))?;
+    }
+
+    // Pastas do jogo para incluir
+    let pastas = [
+        "mods", "resourcepacks", "shaderpacks", "saves", "config",
+        "defaultconfigs", "kubejs", "scripts",
+    ];
+    for pasta in pastas {
+        let caminho_pasta = instancia.path.join(pasta);
+        adicionar_diretorio_ao_zip(&mut zip, &caminho_pasta, pasta, options)?;
+    }
+
+    // Arquivos avulsos
+    let arquivos_avulsos = [
+        "options.txt", "optionsof.txt", "optionsshaders.txt",
+        "servers.dat",
+    ];
+    for arquivo in arquivos_avulsos {
+        let caminho = instancia.path.join(arquivo);
+        if caminho.exists() && caminho.is_file() {
+            let dados = std::fs::read(&caminho)
+                .map_err(|e| format!("Erro ao ler {}: {}", arquivo, e))?;
+            zip.start_file(arquivo, options)
+                .map_err(|e| format!("Erro ao adicionar {}: {}", arquivo, e))?;
+            zip.write_all(&dados)
+                .map_err(|e| format!("Erro ao escrever {}: {}", arquivo, e))?;
+        }
+    }
+
+    zip.finish()
+        .map_err(|e| format!("Erro ao finalizar arquivo zip: {}", e))?;
+
+    Ok(ResultadoExportacao {
+        sucesso: true,
+        caminho_arquivo: Some(caminho_zip.to_string_lossy().to_string()),
+        mensagem: format!("Instância exportada como {}", nome_arquivo),
+    })
+}
+
+#[tauri::command]
+async fn importar_instancia_arquivo(
+    caminho_arquivo: String,
+    state: State<'_, LauncherState>,
+) -> Result<ResultadoImportacaoArquivo, String> {
+    let caminho = std::path::PathBuf::from(caminho_arquivo.trim());
+    if !caminho.exists() {
+        return Err("Arquivo não encontrado.".to_string());
+    }
+
+    let arquivo = std::fs::File::open(&caminho)
+        .map_err(|e| format!("Erro ao abrir arquivo: {}", e))?;
+    let mut zip = zip::ZipArchive::new(arquivo)
+        .map_err(|e| format!("Erro ao ler arquivo zip: {}", e))?;
+
+    // Tentar ler o manifesto do Dome Launcher
+    let manifesto: Option<ManifestoExportacao> = {
+        match zip.by_name("dome_manifest.json") {
+            Ok(mut entry) => {
+                let mut conteudo = String::new();
+                use std::io::Read;
+                entry.read_to_string(&mut conteudo).ok();
+                serde_json::from_str(&conteudo).ok()
+            }
+            Err(_) => None,
+        }
+    };
+
+    // Se não tiver manifesto, tentar instance.json (import de outro launcher)
+    let (nome, versao_mc, _mc_type, loader_type, loader_version) = if let Some(ref m) = manifesto {
+        (
+            m.nome.clone(),
+            m.versao_minecraft.clone(),
+            m.mc_type.clone(),
+            m.loader_type.clone(),
+            m.loader_version.clone(),
+        )
+    } else {
+        // Tentar ler instance.json
+        match zip.by_name("instance.json") {
+            Ok(mut entry) => {
+                let mut conteudo = String::new();
+                use std::io::Read;
+                entry.read_to_string(&mut conteudo).ok();
+                match serde_json::from_str::<serde_json::Value>(&conteudo) {
+                    Ok(json) => {
+                        let nome = json["name"].as_str().unwrap_or("Importada").to_string();
+                        let versao = json["version"].as_str().unwrap_or("").to_string();
+                        let mc_type = json["mcType"]
+                            .as_str()
+                            .or(json["mc_type"].as_str())
+                            .unwrap_or("vanilla")
+                            .to_string();
+                        let loader = json["loaderType"]
+                            .as_str()
+                            .or(json["loader_type"].as_str())
+                            .map(String::from);
+                        let loader_v = json["loaderVersion"]
+                            .as_str()
+                            .or(json["loader_version"].as_str())
+                            .map(String::from);
+                        (nome, versao, mc_type, loader, loader_v)
+                    }
+                    Err(_) => {
+                        return Err(
+                            "Arquivo zip inválido: não contém dome_manifest.json nem instance.json válido."
+                                .to_string(),
+                        )
+                    }
+                }
+            }
+            Err(_) => {
+                return Err(
+                    "Arquivo zip inválido: não contém dome_manifest.json nem instance.json."
+                        .to_string(),
+                )
+            }
+        }
+    };
+
+    if versao_mc.is_empty() {
+        return Err("Versão do Minecraft não encontrada no arquivo.".to_string());
+    }
+
+    // Criar instância base
+    let nome_unico = gerar_nome_instancia_unico(&state, &nome);
+    let instancia_criada = criar_instancia_base_importada(
+        &state,
+        &nome_unico,
+        &versao_mc,
+        loader_type.as_deref(),
+        loader_version.as_deref(),
+    )
+    .await?;
+
+    // Extrair arquivos do zip para a pasta da instância
+    // Reabrir o zip para extrair (o ZipArchive anterior foi consumido parcialmente)
+    let arquivo = std::fs::File::open(&caminho)
+        .map_err(|e| format!("Erro ao reabrir arquivo: {}", e))?;
+    let mut zip = zip::ZipArchive::new(arquivo)
+        .map_err(|e| format!("Erro ao reler arquivo zip: {}", e))?;
+
+    // Itens que devemos extrair (ignorando manifesto e instance.json pois já usamos)
+    for i in 0..zip.len() {
+        let mut entry = match zip.by_index(i) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let nome_entrada = match entry.enclosed_name() {
+            Some(n) => n.to_path_buf(),
+            None => continue,
+        };
+
+        let nome_str = nome_entrada.to_string_lossy().to_string();
+        // Pular manifesto e instance.json (já processados)
+        if nome_str == "dome_manifest.json" || nome_str == "instance.json" {
+            continue;
+        }
+
+        let destino = instancia_criada.path.join(&nome_entrada);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&destino).ok();
+        } else {
+            if let Some(pai) = destino.parent() {
+                std::fs::create_dir_all(pai).ok();
+            }
+            let mut arquivo_destino = std::fs::File::create(&destino)
+                .map_err(|e| format!("Erro ao criar arquivo {}: {}", nome_str, e))?;
+            std::io::copy(&mut entry, &mut arquivo_destino)
+                .map_err(|e| format!("Erro ao extrair {}: {}", nome_str, e))?;
+        }
+    }
+
+    Ok(ResultadoImportacaoArquivo {
+        sucesso: true,
+        instancia_id: Some(instancia_criada.id.clone()),
+        mensagem: format!(
+            "Instância '{}' importada com sucesso.",
+            instancia_criada.name
+        ),
+    })
+}
+
+/// Permite escolher o caminho de destino via dialog nativo
+#[tauri::command]
+async fn escolher_pasta_exportacao() -> Result<Option<String>, String> {
+    let downloads = std::env::var("USERPROFILE")
+        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    Ok(Some(downloads.to_string_lossy().to_string()))
+}
+
+/// Selecionar arquivo para importar
+#[tauri::command]
+async fn escolher_arquivo_importacao() -> Result<Option<String>, String> {
+    // Retorna None - a seleção real é feita no frontend via dialog nativo
+    Ok(None)
 }
 
 // ===== FUNÇÃO PARA BUSCAR VERSÕES DOS LOADERS =====
@@ -938,31 +2189,6 @@ fn lista_str_de_json(valor: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn tag_minecraft_compativel(tag: &str, versao_instancia: &str) -> bool {
-    if tag == versao_instancia {
-        return true;
-    }
-
-    // Aceita tags amplas como "1.21" para qualquer patch 1.21.x.
-    let tag_numerica = tag
-        .chars()
-        .all(|c| c.is_ascii_digit() || c == '.');
-    if tag_numerica && tag.matches('.').count() == 1 {
-        return versao_instancia.starts_with(&format!("{}.", tag));
-    }
-
-    false
-}
-
-fn versao_minecraft_compativel(tags: &[String], versao_instancia: &str) -> bool {
-    if tags.is_empty() {
-        return true;
-    }
-
-    tags.iter()
-        .any(|tag| tag_minecraft_compativel(tag, versao_instancia))
-}
-
 fn loader_compativel(tags: &[String], loader_instancia: &Option<String>) -> bool {
     let loader_instancia = match loader_instancia {
         Some(loader) => loader,
@@ -976,13 +2202,22 @@ fn loader_compativel(tags: &[String], loader_instancia: &Option<String>) -> bool
     tags.iter().any(|t| t.eq_ignore_ascii_case(loader_instancia))
 }
 
-fn arquivo_curseforge_compativel(
-    arquivo: &serde_json::Value,
-    versao_instancia: &str,
-    loader_instancia: &Option<String>,
-) -> bool {
-    let game_versions = lista_str_de_json(&arquivo["gameVersions"]);
+fn pontuar_tag_minecraft_curseforge(tag: &str, versao_instancia: &str) -> Option<i32> {
+    if tag == versao_instancia {
+        return Some(300);
+    }
 
+    let tag_numerica = tag.chars().all(|c| c.is_ascii_digit() || c == '.');
+    if tag_numerica && tag.matches('.').count() == 1 && versao_instancia.starts_with(&format!("{}.", tag))
+    {
+        return Some(150);
+    }
+
+    None
+}
+
+fn extrair_tags_arquivo_curseforge(arquivo: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let game_versions = lista_str_de_json(&arquivo["gameVersions"]);
     let versoes_mc: Vec<String> = game_versions
         .iter()
         .filter(|s| s.chars().next().is_some_and(|c| c.is_ascii_digit()))
@@ -995,11 +2230,82 @@ fn arquivo_curseforge_compativel(
             let s_lower = s.to_lowercase();
             matches!(s_lower.as_str(), "fabric" | "forge" | "neoforge" | "quilt")
         })
-        .cloned()
+        .map(|s| s.to_lowercase())
         .collect();
 
-    versao_minecraft_compativel(&versoes_mc, versao_instancia)
-        && loader_compativel(&tags_loader, loader_instancia)
+    (versoes_mc, tags_loader)
+}
+
+fn nome_arquivo_valido_curseforge(tipo_conteudo: &str, nome_arquivo: &str) -> bool {
+    let nome = nome_arquivo.to_lowercase();
+    match tipo_conteudo {
+        "mod" => nome.ends_with(".jar"),
+        "resourcepack" | "shader" => nome.ends_with(".zip") || nome.ends_with(".jar"),
+        _ => false,
+    }
+}
+
+fn pontuar_arquivo_curseforge(
+    arquivo: &serde_json::Value,
+    tipo_conteudo: &str,
+    versao_instancia: &str,
+    loader_instancia: &Option<String>,
+) -> Option<i32> {
+    if !arquivo["isAvailable"].as_bool().unwrap_or(true) {
+        return None;
+    }
+
+    let nome_arquivo = arquivo["fileName"].as_str().unwrap_or("");
+    if !nome_arquivo_valido_curseforge(tipo_conteudo, nome_arquivo) {
+        return None;
+    }
+    if !arquivo["downloadUrl"].is_string() {
+        return None;
+    }
+
+    let (versoes_mc, tags_loader) = extrair_tags_arquivo_curseforge(arquivo);
+    let mut score = 0;
+
+    if versoes_mc.is_empty() {
+        score += 40;
+    } else {
+        let melhor_mc = versoes_mc
+            .iter()
+            .filter_map(|tag| pontuar_tag_minecraft_curseforge(tag, versao_instancia))
+            .max()?;
+        score += melhor_mc;
+    }
+
+    if tipo_conteudo == "mod" {
+        if let Some(loader) = loader_instancia {
+            if tags_loader.is_empty() {
+                score += 40;
+            } else if tags_loader.iter().any(|tag| tag.eq_ignore_ascii_case(loader)) {
+                score += 200;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    let file_id = arquivo["id"].as_i64().unwrap_or(0) as i32;
+    Some(score.saturating_mul(100_000) + file_id.max(0))
+}
+
+fn selecionar_arquivo_curseforge_compativel<'a>(
+    arquivos: &'a [serde_json::Value],
+    tipo_conteudo: &str,
+    versao_instancia: &str,
+    loader_instancia: &Option<String>,
+) -> Option<&'a serde_json::Value> {
+    arquivos
+        .iter()
+        .filter_map(|arquivo| {
+            pontuar_arquivo_curseforge(arquivo, tipo_conteudo, versao_instancia, loader_instancia)
+                .map(|score| (score, arquivo))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, arquivo)| arquivo)
 }
 
 fn versao_modrinth_compativel(
@@ -1072,47 +2378,51 @@ async fn install_mod(
         // Buscar informações detalhadas do mod
         let mod_details_url = format!("{}/mods/{}", CURSEFORGE_API_BASE, mod_info.id);
         let details_request = anexar_headers_curseforge(client.get(&mod_details_url))?;
-        let details_response = details_request
+        let resposta_http = details_request
             .send()
             .await
-            .map_err(|e| format!("Erro na requisição CurseForge: {}", e))?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| format!("Erro ao parsear resposta CurseForge: {}", e))?;
+            .map_err(|e| format!("Erro na requisição CurseForge: {}", e))?;
 
-        // Pegar a versão mais recente compatível
-        let mut found_url = None;
+        if !resposta_http.status().is_success() {
+            return Err(format!(
+                "CurseForge retornou HTTP {} ao buscar mod {}",
+                resposta_http.status().as_u16(),
+                mod_info.id
+            ));
+        }
+
+        let texto = resposta_http.text().await.map_err(|e| {
+            format!("Erro ao ler corpo da resposta CurseForge: {}", e)
+        })?;
+        let details_response: serde_json::Value =
+            serde_json::from_str(&texto).map_err(|e| {
+                format!("Erro ao parsear JSON CurseForge: {}", e)
+            })?;
+
         if let Some(latest_files) = details_response["data"]["latestFiles"].as_array() {
             if latest_files.is_empty() {
                 return Err("Nenhum arquivo encontrado para este mod no CurseForge".to_string());
             }
 
-            for file in latest_files {
-                if !arquivo_curseforge_compativel(file, &versao_instancia, &loader_instancia) {
-                    continue;
-                }
-
-                if let Some(file_name) = file["fileName"].as_str() {
-                    if file_name.ends_with(".jar") {
-                        if let Some(url) = file["downloadUrl"].as_str() {
-                            found_url = Some(url.to_string());
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            return Err("Campo 'latestFiles' não encontrado na resposta do CurseForge".to_string());
-        }
-
-        match found_url {
-            Some(url) => url,
-            None => {
-                return Err(format!(
+            let arquivo_escolhido = selecionar_arquivo_curseforge_compativel(
+                latest_files,
+                "mod",
+                &versao_instancia,
+                &loader_instancia,
+            )
+            .ok_or_else(|| {
+                format!(
                     "Nenhum arquivo CurseForge compatível com MC {} e loader {:?}",
                     versao_instancia, loader_instancia
-                ))
-            }
+                )
+            })?;
+
+            arquivo_escolhido["downloadUrl"]
+                .as_str()
+                .ok_or("Arquivo CurseForge compatível sem downloadUrl".to_string())?
+                .to_string()
+        } else {
+            return Err("Campo 'latestFiles' não encontrado na resposta do CurseForge".to_string());
         }
     } else if mod_info.platform == ModPlatform::Modrinth {
         // Para Modrinth, buscar somente versões da instância (fluxo do app oficial).
@@ -1229,7 +2539,11 @@ async fn baixar_arquivo_para_pasta(
 ) -> Result<(), String> {
     std::fs::create_dir_all(pasta_destino).map_err(|e| e.to_string())?;
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("DomeLauncher/1.0 (+https://domestudios.com.br)")
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP: {}", e))?;
     let resposta = client
         .get(&download_url)
         .send()
@@ -1288,6 +2602,160 @@ async fn baixar_arquivo_para_pasta(
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ImagemGaleriaProjetoCurseforge {
+    url: String,
+    raw_url: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+    featured: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DetalhesProjetoCurseforge {
+    id: String,
+    title: String,
+    description: String,
+    body: String,
+    icon_url: String,
+    author: String,
+    slug: String,
+    downloads: Option<u64>,
+    categorias: Vec<String>,
+    galeria: Vec<ImagemGaleriaProjetoCurseforge>,
+}
+
+#[tauri::command]
+async fn buscar_detalhes_projeto_curseforge(
+    project_id: String,
+) -> Result<DetalhesProjetoCurseforge, String> {
+    let client = reqwest::Client::new();
+    let detalhes_url = format!("{}/mods/{}", CURSEFORGE_API_BASE, project_id);
+    let request = anexar_headers_curseforge(client.get(&detalhes_url))?;
+    let resposta = request
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao buscar detalhes do CurseForge: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(format!(
+            "CurseForge retornou erro ao buscar detalhes: {}",
+            resposta.status()
+        ));
+    }
+
+    let payload: serde_json::Value = resposta
+        .json()
+        .await
+        .map_err(|e| format!("Erro ao parsear detalhes do CurseForge: {}", e))?;
+    let dados = &payload["data"];
+
+    if dados.is_null() {
+        return Err("Resposta do CurseForge sem dados do projeto.".to_string());
+    }
+
+    let id = dados["id"].as_u64().unwrap_or(0).to_string();
+    let title = dados["name"].as_str().unwrap_or("").to_string();
+    let description = dados["summary"].as_str().unwrap_or("").to_string();
+    let icon_url = dados["logo"]["url"].as_str().unwrap_or("").to_string();
+    let author = dados["authors"]
+        .as_array()
+        .and_then(|autores| autores.first())
+        .and_then(|autor| autor["name"].as_str())
+        .unwrap_or("Autor desconhecido")
+        .to_string();
+
+    let website_url = dados["links"]["websiteUrl"].as_str().unwrap_or("");
+    let slug = dados["slug"]
+        .as_str()
+        .map(|valor| valor.to_string())
+        .or_else(|| extrair_slug_de_url_curseforge(website_url))
+        .unwrap_or_default();
+
+    let categorias = dados["categories"]
+        .as_array()
+        .map(|itens| {
+            itens
+                .iter()
+                .filter_map(|categoria| {
+                    categoria["name"]
+                        .as_str()
+                        .map(|nome| nome.trim().to_string())
+                        .filter(|nome| !nome.is_empty())
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let galeria = dados["screenshots"]
+        .as_array()
+        .map(|itens| {
+            itens
+                .iter()
+                .filter_map(|imagem| {
+                    let url_completa = imagem["url"]
+                        .as_str()
+                        .map(|valor| valor.trim().to_string())
+                        .filter(|valor| !valor.is_empty())?;
+                    let url_thumb = imagem["thumbnailUrl"]
+                        .as_str()
+                        .map(|valor| valor.trim().to_string())
+                        .filter(|valor| !valor.is_empty());
+
+                    let title = imagem["title"]
+                        .as_str()
+                        .map(|valor| valor.trim().to_string())
+                        .filter(|valor| !valor.is_empty());
+                    let description = imagem["description"]
+                        .as_str()
+                        .map(|valor| valor.trim().to_string())
+                        .filter(|valor| !valor.is_empty());
+
+                    Some(ImagemGaleriaProjetoCurseforge {
+                        url: url_thumb.unwrap_or_else(|| url_completa.clone()),
+                        raw_url: Some(url_completa),
+                        title,
+                        description,
+                        featured: false,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let description_url = format!("{}/mods/{}/description", CURSEFORGE_API_BASE, project_id);
+    let request_description = anexar_headers_curseforge(client.get(&description_url))?;
+    let resposta_description = request_description
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao buscar descrição do CurseForge: {}", e))?;
+
+    let body = if resposta_description.status().is_success() {
+        let payload_descricao: serde_json::Value = resposta_description
+            .json()
+            .await
+            .map_err(|e| format!("Erro ao parsear descrição do CurseForge: {}", e))?;
+        payload_descricao["data"].as_str().unwrap_or("").to_string()
+    } else {
+        String::new()
+    };
+
+    Ok(DetalhesProjetoCurseforge {
+        id,
+        title,
+        description,
+        body,
+        icon_url,
+        author,
+        slug,
+        downloads: dados["downloadCount"].as_u64(),
+        categorias,
+        galeria,
+    })
+}
+
 #[tauri::command]
 async fn install_curseforge_project_file(
     instance_id: String,
@@ -1317,10 +2785,14 @@ async fn install_curseforge_project_file(
         ));
     }
 
-    let payload: serde_json::Value = resposta
-        .json()
+    let texto_resposta = resposta
+        .text()
         .await
-        .map_err(|e| format!("Erro ao parsear resposta do CurseForge: {}", e))?;
+        .map_err(|e| format!("Erro ao ler corpo da resposta CurseForge: {}", e))?;
+    let payload: serde_json::Value =
+        serde_json::from_str(&texto_resposta).map_err(|e| {
+            format!("Erro ao parsear JSON CurseForge: {}", e)
+        })?;
 
     let arquivos = payload["data"]
         .as_array()
@@ -1329,21 +2801,18 @@ async fn install_curseforge_project_file(
     let loader_instancia = normalizar_loader_para_mods(instance.loader_type.as_deref());
     let versao_instancia = instance.version.clone();
 
-    let arquivo_escolhido = arquivos
-        .iter()
-        .find(|arquivo| {
-            if !arquivo["isAvailable"].as_bool().unwrap_or(true) {
-                return false;
-            }
-
-            if tipo_normalizado == "mod" {
-                return arquivo_curseforge_compativel(arquivo, &versao_instancia, &loader_instancia);
-            }
-
-            let nome = arquivo["fileName"].as_str().unwrap_or("").to_lowercase();
-            nome.ends_with(".zip") || nome.ends_with(".jar")
-        })
-        .ok_or("Nenhum arquivo compatível encontrado no CurseForge")?;
+    let arquivo_escolhido = selecionar_arquivo_curseforge_compativel(
+        arquivos,
+        &tipo_normalizado,
+        &versao_instancia,
+        &loader_instancia,
+    )
+    .ok_or_else(|| {
+        format!(
+            "Nenhum arquivo CurseForge compatível com MC {} para o tipo {}.",
+            versao_instancia, tipo_normalizado
+        )
+    })?;
 
     let download_url = arquivo_escolhido["downloadUrl"]
         .as_str()
@@ -1362,6 +2831,166 @@ async fn install_curseforge_project_file(
         "curseforge",
     )
     .await
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DadosInstalacaoModpackCurseforge {
+    nome_modpack: String,
+    versao_modpack: String,
+    versao_minecraft: String,
+    loader_type: String,
+    download_url: String,
+    file_name: String,
+}
+
+fn arquivo_modpack_curseforge_valido(arquivo: &serde_json::Value) -> bool {
+    let nome = arquivo["fileName"].as_str().unwrap_or("").to_lowercase();
+    if !nome.ends_with(".zip") {
+        return false;
+    }
+    arquivo["downloadUrl"]
+        .as_str()
+        .map(|u| !u.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn escolher_arquivo_modpack_curseforge<'a>(
+    arquivos: &'a [serde_json::Value],
+) -> Option<&'a serde_json::Value> {
+    arquivos.iter().find(|arquivo| arquivo_modpack_curseforge_valido(arquivo))
+}
+
+#[tauri::command]
+async fn resolver_modpack_curseforge(
+    project_id: String,
+) -> Result<DadosInstalacaoModpackCurseforge, String> {
+    let client = reqwest::Client::new();
+    let files_url = format!(
+        "{}/mods/{}/files?pageSize=50&sortField=1&sortOrder=desc",
+        CURSEFORGE_API_BASE, project_id
+    );
+    let request = anexar_headers_curseforge(client.get(&files_url))?;
+    let resposta = request
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao listar arquivos do modpack CurseForge: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(format!(
+            "CurseForge retornou erro ao listar modpack: {}",
+            resposta.status()
+        ));
+    }
+
+    let payload: serde_json::Value = resposta
+        .json()
+        .await
+        .map_err(|e| format!("Erro ao parsear resposta do CurseForge: {}", e))?;
+    let arquivos = payload["data"]
+        .as_array()
+        .ok_or("Resposta do CurseForge sem lista de arquivos.")?;
+
+    let arquivo = escolher_arquivo_modpack_curseforge(arquivos)
+        .ok_or("Nenhum arquivo de modpack CurseForge com download disponível foi encontrado.")?;
+
+    let download_url = arquivo["downloadUrl"]
+        .as_str()
+        .ok_or("Arquivo de modpack sem URL de download.")?
+        .to_string();
+    let file_name = arquivo["fileName"]
+        .as_str()
+        .filter(|nome| !nome.trim().is_empty())
+        .unwrap_or("modpack.zip")
+        .to_string();
+
+    let mut nome_modpack = arquivo["displayName"]
+        .as_str()
+        .filter(|nome| !nome.trim().is_empty())
+        .unwrap_or("Modpack CurseForge")
+        .to_string();
+    let mut versao_modpack = arquivo["displayName"]
+        .as_str()
+        .filter(|nome| !nome.trim().is_empty())
+        .unwrap_or("latest")
+        .to_string();
+
+    let (versoes_mc, loaders_tags) = extrair_tags_arquivo_curseforge(arquivo);
+    let mut versao_minecraft = versoes_mc.first().cloned();
+    let mut loader_type = loaders_tags
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "vanilla".to_string());
+
+    let bytes = client
+        .get(&download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao baixar modpack CurseForge: {}", e))?
+        .bytes()
+        .await
+        .map_err(|e| format!("Erro ao ler bytes do modpack CurseForge: {}", e))?;
+
+    let cursor = std::io::Cursor::new(bytes.to_vec());
+    if let Ok(mut archive) = zip::ZipArchive::new(cursor) {
+        if let Ok(mut manifesto) = archive.by_name("manifest.json") {
+            let mut conteudo = String::new();
+            if std::io::Read::read_to_string(&mut manifesto, &mut conteudo).is_ok() {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&conteudo) {
+                    if let Some(nome) = json["name"].as_str().filter(|nome| !nome.trim().is_empty())
+                    {
+                        nome_modpack = nome.to_string();
+                    }
+
+                    if let Some(versao) = json["version"].as_str() {
+                        if !versao.trim().is_empty() {
+                            versao_modpack = versao.to_string();
+                        }
+                    } else if let Some(versao_num) = json["version"].as_i64() {
+                        versao_modpack = versao_num.to_string();
+                    }
+
+                    if let Some(versao_mc) = json["minecraft"]["version"].as_str() {
+                        if !versao_mc.trim().is_empty() {
+                            versao_minecraft = Some(versao_mc.to_string());
+                        }
+                    }
+
+                    if let Some(loaders) = json["minecraft"]["modLoaders"].as_array() {
+                        for loader in loaders {
+                            let id_loader = loader["id"]
+                                .as_str()
+                                .or_else(|| loader.as_str())
+                                .unwrap_or("");
+                            if let Some(loader_normalizado) =
+                                detectar_loader_normalizado(Some(id_loader))
+                            {
+                                loader_type = loader_normalizado;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let versao_minecraft = versao_minecraft
+        .filter(|versao| !versao.trim().is_empty())
+        .ok_or("Não foi possível detectar a versão do Minecraft do modpack CurseForge.")?;
+
+    if !matches!(loader_type.as_str(), "forge" | "fabric" | "neoforge") {
+        loader_type = "vanilla".to_string();
+    }
+
+    Ok(DadosInstalacaoModpackCurseforge {
+        nome_modpack,
+        versao_modpack,
+        versao_minecraft,
+        loader_type,
+        download_url,
+        file_name,
+    })
 }
 
 #[tauri::command]
@@ -1385,7 +3014,7 @@ fn get_installed_mods(
     if let Ok(entries) = std::fs::read_dir(mods_dir) {
         for entry in entries.flatten() {
             if let Some(file_name) = entry.file_name().to_str() {
-                if file_name.ends_with(".jar") {
+                if file_name.ends_with(".jar") || file_name.ends_with(".jar.disabled") {
                     mods.push(file_name.to_string());
                 }
             }
@@ -1416,7 +3045,10 @@ fn get_installed_resourcepacks(
     if let Ok(entries) = std::fs::read_dir(resourcepacks_dir) {
         for entry in entries.flatten() {
             if let Some(file_name) = entry.file_name().to_str() {
-                if file_name.ends_with(".zip") || entry.path().is_dir() {
+                if file_name.ends_with(".zip")
+                    || file_name.ends_with(".zip.disabled")
+                    || entry.path().is_dir()
+                {
                     packs.push(file_name.to_string());
                 }
             }
@@ -1447,7 +3079,10 @@ fn get_installed_shaders(
     if let Ok(entries) = std::fs::read_dir(shaders_dir) {
         for entry in entries.flatten() {
             if let Some(file_name) = entry.file_name().to_str() {
-                if file_name.ends_with(".zip") || entry.path().is_dir() {
+                if file_name.ends_with(".zip")
+                    || file_name.ends_with(".zip.disabled")
+                    || entry.path().is_dir()
+                {
                     shaders.push(file_name.to_string());
                 }
             }
@@ -1509,6 +3144,75 @@ fn remove_project_file(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+fn toggle_project_file_enabled(
+    instance_id: String,
+    project_type: String,
+    file_name: String,
+    enabled: bool,
+    state: State<LauncherState>,
+) -> Result<String, String> {
+    let instance = obter_instancia_por_id(&state, &instance_id)?;
+    let tipo_normalizado = project_type.trim().to_lowercase();
+    let pasta_destino = pasta_destino_conteudo(&instance, &tipo_normalizado)?;
+
+    let nome_seguro = std::path::Path::new(&file_name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("Nome de arquivo inválido para alterar estado.")?
+        .to_string();
+
+    if nome_seguro.is_empty() {
+        return Err("Nome de arquivo vazio para alterar estado.".to_string());
+    }
+
+    let nome_habilitado = if nome_seguro.ends_with(".disabled") {
+        nome_seguro.trim_end_matches(".disabled").to_string()
+    } else {
+        nome_seguro.clone()
+    };
+    let nome_desabilitado = if nome_habilitado.ends_with(".disabled") {
+        nome_habilitado.clone()
+    } else {
+        format!("{}.disabled", nome_habilitado)
+    };
+
+    let origem_nome = if enabled {
+        nome_desabilitado.clone()
+    } else {
+        nome_habilitado.clone()
+    };
+    let destino_nome = if enabled {
+        nome_habilitado.clone()
+    } else {
+        nome_desabilitado.clone()
+    };
+
+    let caminho_origem = pasta_destino.join(&origem_nome);
+    let caminho_destino = pasta_destino.join(&destino_nome);
+
+    if caminho_destino.exists() && !caminho_origem.exists() {
+        return Ok(destino_nome);
+    }
+    if !caminho_origem.exists() {
+        return Err(format!(
+            "Arquivo '{}' não encontrado para alterar estado.",
+            origem_nome
+        ));
+    }
+
+    let origem_validada = validar_caminho_dentro_raiz(&pasta_destino, &caminho_origem)?;
+    let _ = validar_caminho_dentro_raiz(
+        &pasta_destino,
+        caminho_destino.parent().unwrap_or(&pasta_destino),
+    )?;
+
+    std::fs::rename(origem_validada, &caminho_destino)
+        .map_err(|e| format!("Falha ao alternar estado do arquivo: {}", e))?;
+
+    Ok(destino_nome)
 }
 
 fn obter_instancia_por_id(state: &LauncherState, instance_id: &str) -> Result<Instance, String> {
@@ -2450,10 +4154,6 @@ async fn search_mods_online(
     content_type: Option<String>,
 ) -> Result<Vec<ModSearchResult>, String> {
     let tipo_conteudo = normalizar_tipo_conteudo(content_type);
-    println!(
-        "🔍 search_mods_online query='{}' platform={:?} tipo={}",
-        query, platform, tipo_conteudo
-    );
     let client = reqwest::Client::new();
     let mut results = Vec::new();
     let mut erros = Vec::new();
@@ -2502,10 +4202,6 @@ async fn search_mods_online(
         return Err(erros.join(" | "));
     }
 
-    println!(
-        "🎉 Busca concluída: {} resultados encontrados no total",
-        results.len()
-    );
     Ok(results)
 }
 
@@ -2514,10 +4210,6 @@ async fn search_curseforge_conteudo(
     query: &str,
     tipo_conteudo: &str,
 ) -> Result<Vec<ModSearchResult>, String> {
-    println!(
-        "🔍 Buscando no CurseForge: '{}' ({})",
-        query, tipo_conteudo
-    );
     let class_id = class_id_por_tipo_conteudo(tipo_conteudo);
     let search_url = format!(
         "{}/mods/search?gameId=432&searchFilter={}&classId={}&pageSize=20&sortField=2&sortOrder=desc",
@@ -2526,20 +4218,47 @@ async fn search_curseforge_conteudo(
         class_id
     );
 
-    println!("📡 URL CurseForge: {}", search_url);
     let request = anexar_headers_curseforge(client.get(&search_url))?;
-    let response = request
+    let resposta_http = request
         .send()
         .await
-        .map_err(|e| format!("Erro na busca CurseForge: {}", e))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("Erro ao parsear resposta CurseForge: {}", e))?;
+        .map_err(|e| format!("Erro na busca CurseForge: {}", e))?;
+
+    if !resposta_http.status().is_success() {
+        let status = resposta_http.status();
+        let corpo = resposta_http.text().await.unwrap_or_default();
+        let trecho: String = corpo.chars().take(200).collect();
+        let dica_key = if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            format!(
+                " Verifique a chave da API (CURSEFORGE_API_KEY ou fallback configurado no backend)."
+            )
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "CurseForge retornou HTTP {} — {}{}",
+            status.as_u16(),
+            trecho,
+            dica_key
+        ));
+    }
+
+    let texto_corpo = resposta_http.text().await.map_err(|e| {
+        format!("Erro ao ler corpo da resposta CurseForge: {}", e)
+    })?;
+    let response: serde_json::Value = serde_json::from_str(&texto_corpo).map_err(|e| {
+        let trecho: String = texto_corpo.chars().take(200).collect();
+        format!(
+            "Erro ao parsear JSON CurseForge: {} — Corpo: {}",
+            e, trecho
+        )
+    })?;
 
     let mut results = Vec::new();
 
     if let Some(data) = response["data"].as_array() {
-        println!("📊 CurseForge retornou {} resultados", data.len());
         for mod_data in data {
             let id = mod_data["id"].as_u64().unwrap_or(0).to_string();
             let name = mod_data["name"]
@@ -2584,11 +4303,7 @@ async fn search_curseforge_conteudo(
                 file_name: None,
             });
         }
-    } else {
-        println!("❌ Nenhum dado encontrado na resposta do CurseForge");
     }
-
-    println!("✅ CurseForge: {} resultados processados", results.len());
     Ok(results)
 }
 
@@ -2597,7 +4312,6 @@ async fn search_modrinth_conteudo(
     query: &str,
     tipo_conteudo: &str,
 ) -> Result<Vec<ModSearchResult>, String> {
-    println!("🔍 Buscando no Modrinth: '{}' ({})", query, tipo_conteudo);
     let search_url = format!(
         "{}/search?query={}&facets=[[\"project_type:{}\"]]&limit=20",
         MODRINTH_API_BASE,
@@ -2605,7 +4319,6 @@ async fn search_modrinth_conteudo(
         tipo_conteudo
     );
 
-    println!("📡 URL Modrinth: {}", search_url);
     let response = client
         .get(&search_url)
         .header("User-Agent", "HeliosLauncher/1.0")
@@ -2619,7 +4332,6 @@ async fn search_modrinth_conteudo(
     let mut results = Vec::new();
 
     if let Some(hits) = response["hits"].as_array() {
-        println!("📊 Modrinth retornou {} mods", hits.len());
         for hit in hits {
             let id = hit["project_id"].as_str().unwrap_or("").to_string();
             let name = hit["title"]
@@ -2661,11 +4373,7 @@ async fn search_modrinth_conteudo(
                 file_name: None,
             });
         }
-    } else {
-        println!("❌ Nenhum hit encontrado na resposta do Modrinth");
     }
-
-    println!("✅ Modrinth: {} resultados processados", results.len());
     Ok(results)
 }
 
@@ -2807,15 +4515,50 @@ fn delete_log_file(
 
 // ===== FUNÇÕES DE INSTALAÇÃO DE LOADERS =====
 
+fn extrair_build_forge(minecraft_version: &str, forge_version: &str) -> String {
+    let versao = forge_version.trim();
+    if versao.is_empty() {
+        return versao.to_string();
+    }
+
+    if let Some(restante) = versao.strip_prefix(&format!("{}-", minecraft_version)) {
+        return restante.to_string();
+    }
+
+    if let Some((prefixo, restante)) = versao.split_once('-') {
+        if prefixo.starts_with("1.") && !restante.trim().is_empty() {
+            return restante.trim().to_string();
+        }
+    }
+
+    versao.to_string()
+}
+
+fn versao_forge_completa(minecraft_version: &str, forge_version: &str) -> String {
+    let versao = forge_version.trim();
+    if versao.starts_with(&format!("{}-", minecraft_version)) {
+        return versao.to_string();
+    }
+
+    let build = extrair_build_forge(minecraft_version, versao);
+    format!("{}-{}", minecraft_version, build)
+}
+
 async fn install_forge_loader(
     instance_path: &std::path::Path,
     minecraft_version: &str,
     forge_version: &str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let versao_forge = versao_forge_completa(minecraft_version, forge_version);
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(120))
+        .user_agent("DomeLauncher/1.0 (+https://domestudios.com.br)")
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP: {}", e))?;
     let installer_url = format!(
-        "https://maven.minecraftforge.net/net/minecraftforge/forge/{}-{}/forge-{}-{}-installer.jar",
-        minecraft_version, forge_version, minecraft_version, forge_version
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}-installer.jar",
+        versao_forge, versao_forge
     );
 
     let temp_dir = std::env::temp_dir().join("dome_launcher_forge_installer");
@@ -2828,25 +4571,48 @@ async fn install_forge_loader(
         .get(&installer_url)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Erro ao baixar instalador Forge: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Falha ao baixar instalador Forge ({}): {}",
+            response.status(),
+            installer_url
+        ));
+    }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
     std::fs::write(&installer_path, bytes).map_err(|e| e.to_string())?;
 
-    // Executar installer
-    let output = std::process::Command::new("java")
-        .args(&["-jar", installer_path.to_str().unwrap(), "--installServer"])
-        .current_dir(instance_path)
-        .output()
-        .map_err(|e| e.to_string())?;
+    // Executar installer. Para launcher cliente, tentamos installClient primeiro.
+    let instalador_str = installer_path
+        .to_str()
+        .ok_or_else(|| "Caminho do instalador Forge inválido.".to_string())?;
 
-    if !output.status.success() {
-        return Err("Falha ao instalar Forge".to_string());
+    let mut tentativas: Vec<String> = Vec::new();
+    for modo in ["--installClient", "--installServer"] {
+        let output = std::process::Command::new("java")
+            .args(["-jar", instalador_str, modo])
+            .current_dir(instance_path)
+            .output()
+            .map_err(|e| format!("Erro ao executar instalador Forge: {}", e))?;
+
+        if output.status.success() {
+            // Limpar arquivos temporários
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detalhe = if !stderr.is_empty() { stderr } else { stdout };
+        tentativas.push(format!("{} -> {}", modo, detalhe));
     }
 
-    // Limpar arquivos temporários
     let _ = std::fs::remove_dir_all(temp_dir);
-
-    Ok(())
+    Err(format!(
+        "Falha ao instalar Forge (versão {}). {}",
+        versao_forge,
+        tentativas.join(" | ")
+    ))
 }
 
 async fn install_fabric_loader(
@@ -3425,10 +5191,12 @@ async fn adjust_forge_manifest(
     forge_version: &str,
 ) -> Result<(), String> {
     // Para Forge, precisamos baixar o manifesto específico do Forge
+    let versao_forge = versao_forge_completa(&details.id, forge_version);
+    let build_forge = extrair_build_forge(&details.id, forge_version);
     let client = reqwest::Client::new();
     let forge_manifest_url = format!(
-        "https://maven.minecraftforge.net/net/minecraftforge/forge/{}-{}/forge-{}-{}.json",
-        details.id, forge_version, details.id, forge_version
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}.json",
+        versao_forge, versao_forge
     );
 
     let response = client
@@ -3441,15 +5209,33 @@ async fn adjust_forge_manifest(
         let forge_details: VersionDetail = response.json().await.map_err(|e| e.to_string())?;
         *details = forge_details;
     } else {
-        // Se não conseguir o manifesto específico, tentar usar o padrão com modificações
-        // Adicionar argumentos específicos do Forge
+        // Fallback para Forge legado (ex.: 1.12.2), onde o .json do Maven pode não existir.
+        details.main_class = "net.minecraft.launchwrapper.Launch".to_string();
+
+        // Adicionar argumentos específicos do Forge.
         if let Some(args) = &mut details.arguments {
             if let Some(game_args) = args.get_mut("game") {
                 if let Some(arr) = game_args.as_array_mut() {
+                    arr.push(serde_json::json!("--tweakClass"));
+                    arr.push(serde_json::json!(
+                        "net.minecraftforge.fml.common.launcher.FMLTweaker"
+                    ));
                     arr.push(serde_json::json!("--fml.forgeVersion"));
-                    arr.push(serde_json::json!(forge_version));
+                    arr.push(serde_json::json!(build_forge));
                 }
             }
+        } else if let Some(legacy) = &mut details.minecraft_arguments {
+            if !legacy.contains("--tweakClass") {
+                legacy.push_str(" --tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker");
+            }
+            if !legacy.contains("--fml.forgeVersion") {
+                legacy.push_str(&format!(" --fml.forgeVersion {}", build_forge));
+            }
+        } else {
+            details.minecraft_arguments = Some(format!(
+                "--tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker --fml.forgeVersion {}",
+                build_forge
+            ));
         }
     }
 
@@ -3923,11 +5709,19 @@ async fn launch_instance_com_opcoes(
     let content = std::fs::read_to_string(version_manifest_path).map_err(|e| e.to_string())?;
     let mut details: VersionDetail = serde_json::from_str(&content).map_err(|e| e.to_string())?;
 
+    // Normalizar loader com fallback para mc_type e comparação case-insensitive.
+    let loader_normalizado = detectar_loader_normalizado(Some(
+        instance
+            .loader_type
+            .as_deref()
+            .filter(|valor| !valor.trim().is_empty())
+            .unwrap_or(instance.mc_type.as_str()),
+    ));
+
     // 1.1. Ajustar manifesto baseado no loader
-    if let Some(loader_type_str) = &instance.loader_type {
-        match loader_type_str.as_str() {
-            "Forge" => {
-                // Para Forge, precisamos usar o manifesto do Forge
+    if let Some(loader_tipo) = loader_normalizado.as_deref() {
+        match loader_tipo {
+            "forge" => {
                 adjust_forge_manifest(
                     &mut details,
                     instance
@@ -3937,8 +5731,7 @@ async fn launch_instance_com_opcoes(
                 )
                 .await?;
             }
-            "Fabric" => {
-                // Para Fabric, ajustar argumentos e classpath
+            "fabric" => {
                 adjust_fabric_manifest(
                     &mut details,
                     instance
@@ -3949,8 +5742,7 @@ async fn launch_instance_com_opcoes(
                 )
                 .await?;
             }
-            "NeoForge" => {
-                // Para NeoForge, similar ao Forge
+            "neoforge" => {
                 adjust_neoforge_manifest(
                     &mut details,
                     instance
@@ -3960,7 +5752,7 @@ async fn launch_instance_com_opcoes(
                 )
                 .await?;
             }
-            _ => {} // Vanilla não precisa ajustes
+            _ => {}
         }
     }
 
@@ -4049,6 +5841,37 @@ async fn launch_instance_com_opcoes(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Forge legado (ex.: 1.12.2) pode exigir jars extras fora do manifesto vanilla.
+    if loader_normalizado.as_deref() == Some("forge") {
+        let mut pilha = vec![libraries_path.clone()];
+        while let Some(pasta) = pilha.pop() {
+            let entradas = match std::fs::read_dir(&pasta) {
+                Ok(valor) => valor,
+                Err(_) => continue,
+            };
+
+            for entrada in entradas.flatten() {
+                let caminho = entrada.path();
+                if caminho.is_dir() {
+                    pilha.push(caminho);
+                    continue;
+                }
+
+                if caminho
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("jar"))
+                    .unwrap_or(false)
+                {
+                    let jar = caminho.to_string_lossy().to_string();
+                    if !cp.contains(&jar) {
+                        cp.push(jar);
                     }
                 }
             }
@@ -4475,6 +6298,31 @@ async fn save_modpack_info(
     std::fs::write(&modpack_path, content)
         .map_err(|e| format!("Erro ao salvar modpack.json: {}", e))?;
 
+    // Sincronizar ícone da instância com o ícone do modpack.
+    if let Some(icone_modpack) = modpack_info
+        .icon
+        .as_ref()
+        .map(|valor| valor.trim().to_string())
+        .filter(|valor| !valor.is_empty())
+    {
+        let instance_json_path = instance_path.join("instance.json");
+        if instance_json_path.exists() {
+            if let Ok(conteudo_instancia) = std::fs::read_to_string(&instance_json_path) {
+                if let Ok(mut json_instancia) =
+                    serde_json::from_str::<serde_json::Value>(&conteudo_instancia)
+                {
+                    if let Some(objeto) = json_instancia.as_object_mut() {
+                        objeto.insert("icon".to_string(), serde_json::Value::String(icone_modpack));
+                    }
+                    let novo_conteudo = serde_json::to_string_pretty(&json_instancia)
+                        .map_err(|e| format!("Erro ao serializar instance.json: {}", e))?;
+                    std::fs::write(&instance_json_path, novo_conteudo)
+                        .map_err(|e| format!("Erro ao atualizar ícone da instância: {}", e))?;
+                }
+            }
+        }
+    }
+
     println!("[save_modpack_info] Salvo: {:?}", modpack_path);
     Ok(())
 }
@@ -4494,22 +6342,58 @@ async fn install_modpack_files(
     std::fs::create_dir_all(&mods_path).map_err(|e| format!("Erro ao criar pasta mods: {}", e))?;
     std::fs::create_dir_all(&temp_path).map_err(|e| format!("Erro ao criar pasta temp: {}", e))?;
 
-    let mrpack_path = temp_path.join(&file_name);
+    let nome_arquivo_seguro = std::path::Path::new(&file_name)
+        .file_name()
+        .and_then(|nome| nome.to_str())
+        .filter(|nome| !nome.trim().is_empty())
+        .unwrap_or("modpack.zip")
+        .to_string();
+    let mrpack_path = temp_path.join(&nome_arquivo_seguro);
 
     println!("[install_modpack_files] Baixando: {}", download_url);
 
     // Baixar o arquivo .mrpack
-    let client = reqwest::Client::new();
-    let response = client
-        .get(&download_url)
-        .send()
-        .await
-        .map_err(|e| format!("Erro ao baixar modpack: {}", e))?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(180))
+        .user_agent("DomeLauncher/1.0 (+https://domestudios.com.br)")
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP: {}", e))?;
+    let mut bytes_modpack = None;
+    let mut ultima_falha_modpack = String::new();
+    for tentativa in 1..=3 {
+        match client.get(&download_url).send().await {
+            Ok(resposta) => {
+                if !resposta.status().is_success() {
+                    ultima_falha_modpack = format!("HTTP {}", resposta.status());
+                } else {
+                    match resposta.bytes().await {
+                        Ok(bytes) => {
+                            bytes_modpack = Some(bytes);
+                            break;
+                        }
+                        Err(e) => {
+                            ultima_falha_modpack = format!("falha ao ler bytes ({})", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                ultima_falha_modpack = e.to_string();
+            }
+        }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Erro ao ler bytes: {}", e))?;
+        if tentativa < 3 {
+            tokio::time::sleep(std::time::Duration::from_secs(tentativa as u64 * 2)).await;
+        }
+    }
+
+    let bytes = bytes_modpack.ok_or_else(|| {
+        format!(
+            "Erro ao baixar modpack após 3 tentativas: {}",
+            ultima_falha_modpack
+        )
+    })?;
 
     std::fs::write(&mrpack_path, &bytes).map_err(|e| format!("Erro ao salvar arquivo: {}", e))?;
 
@@ -4521,26 +6405,26 @@ async fn install_modpack_files(
 
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("Erro ao ler ZIP: {}", e))?;
 
-    // Procurar modrinth.index.json para pegar lista de mods
-    let mut mods_to_download: Vec<(String, String, String)> = Vec::new();
+    // Pode ser Modrinth (modrinth.index.json) ou CurseForge (manifest.json)
+    let mut arquivos_para_baixar: Vec<(String, String, String)> = Vec::new();
+    let mut arquivos_curseforge: Vec<(u64, u64)> = Vec::new();
+    let mut total_arquivos_manifesto_curseforge = 0usize;
+    let mut pasta_overrides = "overrides".to_string();
+    let mut detectou_modrinth = false;
+    let mut detectou_curseforge = false;
+    let mut erros_curseforge: Vec<String> = Vec::new();
 
     for i in 0..archive.len() {
         let mut file = archive
             .by_index(i)
             .map_err(|e| format!("Erro ao ler arquivo do ZIP: {}", e))?;
 
-        let _outpath = match file.enclosed_name() {
-            Some(path) => temp_path.join(path),
-            None => continue,
-        };
-
         if file.name() == "modrinth.index.json" {
-            // Ler o índice
+            detectou_modrinth = true;
             let mut contents = String::new();
             std::io::Read::read_to_string(&mut file, &mut contents)
-                .map_err(|e| format!("Erro ao ler index: {}", e))?;
+                .map_err(|e| format!("Erro ao ler index Modrinth: {}", e))?;
 
-            // Parsear JSON
             if let Ok(index) = serde_json::from_str::<serde_json::Value>(&contents) {
                 if let Some(files) = index["files"].as_array() {
                     for f in files {
@@ -4548,8 +6432,8 @@ async fn install_modpack_files(
                             (f["path"].as_str(), f["downloads"].as_array())
                         {
                             if let Some(url) = downloads.first().and_then(|d| d.as_str()) {
-                                let filename = path.split('/').last().unwrap_or("mod.jar");
-                                mods_to_download.push((
+                                let filename = path.split('/').next_back().unwrap_or("mod.jar");
+                                arquivos_para_baixar.push((
                                     url.to_string(),
                                     filename.to_string(),
                                     path.to_string(),
@@ -4559,37 +6443,198 @@ async fn install_modpack_files(
                     }
                 }
             }
-        } else if file.name().starts_with("overrides/") {
-            // Extrair overrides para a pasta da instância
-            let relative = file
-                .name()
-                .strip_prefix("overrides/")
-                .unwrap_or(file.name());
-            let dest = instance_path.join(relative);
+        } else if file.name() == "manifest.json" {
+            detectou_curseforge = true;
+            let mut contents = String::new();
+            std::io::Read::read_to_string(&mut file, &mut contents)
+                .map_err(|e| format!("Erro ao ler manifest CurseForge: {}", e))?;
 
-            if file.is_dir() {
-                std::fs::create_dir_all(&dest).ok();
-            } else {
-                if let Some(parent) = dest.parent() {
-                    std::fs::create_dir_all(parent).ok();
+            if let Ok(manifesto) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(overrides) = manifesto["overrides"].as_str() {
+                    let normalizado = overrides.trim_matches('/').trim();
+                    if !normalizado.is_empty() {
+                        pasta_overrides = normalizado.to_string();
+                    }
                 }
-                let mut outfile = std::fs::File::create(&dest)
-                    .map_err(|e| format!("Erro ao criar arquivo: {}", e))?;
-                std::io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("Erro ao copiar arquivo: {}", e))?;
+
+                if let Some(files) = manifesto["files"].as_array() {
+                    for entrada in files {
+                        let obrigatorio = entrada["required"].as_bool().unwrap_or(true);
+                        if !obrigatorio {
+                            continue;
+                        }
+                        let mod_id = entrada["projectID"].as_u64();
+                        let file_id = entrada["fileID"].as_u64();
+                        if let (Some(mid), Some(fid)) = (mod_id, file_id) {
+                            total_arquivos_manifesto_curseforge += 1;
+                            arquivos_curseforge.push((mid, fid));
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    if !arquivos_curseforge.is_empty() {
+        for (mod_id, file_id) in arquivos_curseforge {
+            let detalhes_url = format!("{}/mods/{}/files/{}", CURSEFORGE_API_BASE, mod_id, file_id);
+            let request = anexar_headers_curseforge(client.get(&detalhes_url))?;
+            let resposta = request
+                .send()
+                .await
+                .map_err(|e| format!("Erro ao buscar arquivo CurseForge {}:{}: {}", mod_id, file_id, e))?;
+
+            if !resposta.status().is_success() {
+                if erros_curseforge.len() < 8 {
+                    erros_curseforge.push(format!(
+                        "CurseForge {}:{} retornou HTTP {}",
+                        mod_id,
+                        file_id,
+                        resposta.status()
+                    ));
+                }
+                println!(
+                    "[install_modpack_files] CurseForge {}:{} retornou HTTP {}",
+                    mod_id,
+                    file_id,
+                    resposta.status()
+                );
+                continue;
+            }
+
+            let payload: serde_json::Value = resposta
+                .json()
+                .await
+                .map_err(|e| format!("Erro ao parsear detalhe de arquivo CurseForge: {}", e))?;
+            let data = &payload["data"];
+            let mut url_download = data["downloadUrl"].as_str().unwrap_or("").trim().to_string();
+            if url_download.is_empty() {
+                let rota_download_url = format!(
+                    "{}/mods/{}/files/{}/download-url",
+                    CURSEFORGE_API_BASE, mod_id, file_id
+                );
+                let request_download_url = anexar_headers_curseforge(client.get(&rota_download_url))?;
+                match request_download_url.send().await {
+                    Ok(resposta_download_url) => {
+                        if resposta_download_url.status().is_success() {
+                            match resposta_download_url.json::<serde_json::Value>().await {
+                                Ok(payload_download_url) => {
+                                    url_download = payload_download_url["data"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .trim()
+                                        .to_string();
+                                }
+                                Err(e) => {
+                                    if erros_curseforge.len() < 8 {
+                                        erros_curseforge.push(format!(
+                                            "Falha ao parsear download-url de {}:{} ({})",
+                                            mod_id, file_id, e
+                                        ));
+                                    }
+                                }
+                            }
+                        } else if erros_curseforge.len() < 8 {
+                            erros_curseforge.push(format!(
+                                "download-url de {}:{} retornou HTTP {}",
+                                mod_id,
+                                file_id,
+                                resposta_download_url.status()
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        if erros_curseforge.len() < 8 {
+                            erros_curseforge.push(format!(
+                                "Falha ao consultar download-url de {}:{} ({})",
+                                mod_id, file_id, e
+                            ));
+                        }
+                    }
+                }
+            }
+
+            if url_download.is_empty() {
+                if erros_curseforge.len() < 8 {
+                    erros_curseforge.push(format!(
+                        "Arquivo CurseForge {}:{} sem URL de download",
+                        mod_id, file_id
+                    ));
+                }
+                continue;
+            }
+
+            let file_name = data["fileName"]
+                .as_str()
+                .filter(|nome| !nome.trim().is_empty())
+                .unwrap_or("mod.jar")
+                .to_string();
+
+            arquivos_para_baixar.push((
+                url_download,
+                file_name.clone(),
+                format!("mods/{}", file_name),
+            ));
+        }
+    }
+
+    if detectou_curseforge
+        && total_arquivos_manifesto_curseforge > 0
+        && arquivos_para_baixar.is_empty()
+    {
+        let detalhe = if erros_curseforge.is_empty() {
+            "Nenhuma URL válida foi retornada pelo CurseForge.".to_string()
+        } else {
+            format!("Detalhes: {}", erros_curseforge.join(" | "))
+        };
+        return Err(format!(
+            "Não foi possível obter arquivos do modpack no CurseForge. {}",
+            detalhe
+        ));
+    }
+
+    if !detectou_modrinth && !detectou_curseforge {
+        return Err("O arquivo não contém modrinth.index.json nem manifest.json.".to_string());
+    }
+
+    let prefixo_overrides = format!("{}/", pasta_overrides.trim_matches('/'));
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| format!("Erro ao ler arquivo do ZIP: {}", e))?;
+        let nome = file.name().replace('\\', "/");
+        if !nome.starts_with(&prefixo_overrides) {
+            continue;
+        }
+
+        let relative = nome.trim_start_matches(&prefixo_overrides);
+        if relative.is_empty() {
+            continue;
+        }
+        let dest = instance_path.join(relative);
+
+        if file.is_dir() {
+            std::fs::create_dir_all(&dest).ok();
+        } else {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let mut outfile = std::fs::File::create(&dest)
+                .map_err(|e| format!("Erro ao criar arquivo: {}", e))?;
+            std::io::copy(&mut file, &mut outfile)
+                .map_err(|e| format!("Erro ao copiar arquivo: {}", e))?;
         }
     }
 
     println!(
         "[install_modpack_files] {} mods para baixar",
-        mods_to_download.len()
+        arquivos_para_baixar.len()
     );
 
     // Baixar mods em paralelo
     use futures::stream::{self, StreamExt};
 
-    let download_tasks: Vec<_> = mods_to_download
+    let download_tasks: Vec<_> = arquivos_para_baixar
         .iter()
         .map(|(url, filename, path)| {
             let client = client.clone();
@@ -4615,32 +6660,79 @@ async fn install_modpack_files(
                 std::fs::create_dir_all(&dest_folder).ok();
                 let dest_path = dest_folder.join(&filename);
 
-                match client.get(&url).send().await {
-                    Ok(response) => {
-                        if let Ok(bytes) = response.bytes().await {
-                            if let Err(e) = std::fs::write(&dest_path, &bytes) {
-                                println!(
-                                    "[install_modpack_files] Erro ao salvar {}: {}",
-                                    filename, e
-                                );
+                let mut ultima_falha = String::new();
+                for tentativa in 1..=2 {
+                    match client.get(&url).send().await {
+                        Ok(response) => {
+                            if !response.status().is_success() {
+                                ultima_falha = format!("HTTP {}", response.status());
                             } else {
-                                println!("[install_modpack_files] Baixado: {}", filename);
+                                match response.bytes().await {
+                                    Ok(bytes) => {
+                                        if let Err(e) = std::fs::write(&dest_path, &bytes) {
+                                            ultima_falha =
+                                                format!("erro ao salvar arquivo: {}", e);
+                                        } else {
+                                            println!("[install_modpack_files] Baixado: {}", filename);
+                                            return Ok::<(), String>(());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        ultima_falha = format!("erro ao ler bytes: {}", e);
+                                    }
+                                }
                             }
                         }
+                        Err(e) => {
+                            ultima_falha = e.to_string();
+                        }
                     }
-                    Err(e) => {
-                        println!("[install_modpack_files] Erro ao baixar {}: {}", filename, e);
+
+                    if tentativa < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                     }
                 }
+
+                println!(
+                    "[install_modpack_files] Falha ao baixar {}: {}",
+                    filename, ultima_falha
+                );
+                Err(format!(
+                    "Falha ao baixar {} ({}): {}",
+                    filename, url, ultima_falha
+                ))
             }
         })
         .collect();
 
     // Executar downloads em paralelo (10 simultâneos)
-    stream::iter(download_tasks)
+    let resultados_download = stream::iter(download_tasks)
         .buffer_unordered(10)
         .collect::<Vec<_>>()
         .await;
+    let total_sucesso = resultados_download.iter().filter(|r| r.is_ok()).count();
+    let erros_download: Vec<String> = resultados_download
+        .into_iter()
+        .filter_map(Result::err)
+        .take(8)
+        .collect();
+
+    if !arquivos_para_baixar.is_empty() && total_sucesso == 0 {
+        let detalhe_download = if erros_download.is_empty() {
+            "sem detalhes do download".to_string()
+        } else {
+            erros_download.join(" | ")
+        };
+        let detalhe_curseforge = if erros_curseforge.is_empty() {
+            String::new()
+        } else {
+            format!(" | CurseForge: {}", erros_curseforge.join(" | "))
+        };
+        return Err(format!(
+            "Nenhum arquivo do modpack pôde ser baixado. {}{}",
+            detalhe_download, detalhe_curseforge
+        ));
+    }
 
     // Limpar arquivos temporários
     std::fs::remove_dir_all(&temp_path).ok();
@@ -5110,6 +7202,7 @@ pub struct GlobalSettings {
     pub close_on_launch: bool, // fechar launcher ao iniciar jogo
     pub show_snapshots: bool,  // mostrar snapshots na lista de versões
     pub discord_rpc_ativo: bool,
+    pub cor_destaque: String,
 }
 
 impl Default for GlobalSettings {
@@ -5135,6 +7228,7 @@ impl Default for GlobalSettings {
             close_on_launch: false,
             show_snapshots: false,
             discord_rpc_ativo: true,
+            cor_destaque: "verde".to_string(),
         }
     }
 }
@@ -5614,9 +7708,12 @@ pub fn run() {
         .manage(EstadoDiscordPresence::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_instances,
+            listar_instancias_importaveis,
+            importar_instancias_externas,
             create_instance,
             launch_instance,
             launch_instance_to_server,
@@ -5637,9 +7734,11 @@ pub fn run() {
             skin::upload_skin,               // Upload de skin
             // Gerenciador de mods
             search_mods_online,
+            buscar_detalhes_projeto_curseforge,
             install_mod,
             install_project_file,
             install_curseforge_project_file,
+            resolver_modpack_curseforge,
             get_installed_mods,
             get_installed_resourcepacks,
             get_installed_shaders,
@@ -5648,6 +7747,11 @@ pub fn run() {
             update_instance_name,
             update_instance_settings,
             rename_instance_folder,
+            // Exportação / Importação de instâncias
+            exportar_instancia,
+            importar_instancia_arquivo,
+            escolher_pasta_exportacao,
+            escolher_arquivo_importacao,
             // Gerenciamento de mundos
             get_worlds,
             get_servers,
@@ -5662,6 +7766,7 @@ pub fn run() {
             // Remoção de mods
             remove_mod,
             remove_project_file,
+            toggle_project_file_enabled,
             // Monitoramento do Minecraft
             is_instance_running,
             get_running_instances,

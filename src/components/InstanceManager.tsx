@@ -129,6 +129,8 @@ type EstruturaCacheConteudo = Record<string, RegistroCacheConteudo>;
 const CHAVE_CACHE_CONTEUDO_INSTALADO = "dome:cache-conteudo-instalado:v1";
 const TTL_CACHE_CONTEUDO_MS = 1000 * 60 * 60 * 24 * 30;
 const TTL_CACHE_ATUALIZACAO_MS = 1000 * 60 * 60 * 6;
+const TTL_RETENTATIVA_ENRIQUECIMENTO_MS = 1000 * 60 * 60 * 24;
+const LIMITE_ENRIQUECIMENTO_POR_CICLO = 8;
 
 const tipoProjetoPorFiltro = (filtro: ContentFilter): TipoProjetoCache => {
   if (filtro === "resourcepacks") return "resourcepack";
@@ -253,8 +255,10 @@ export default function InstanceManager({
   const [logContent, setLogContent] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [installedModFileNames, setInstalledModFileNames] = useState<Set<string>>(new Set());
   const [updatingAll, setUpdatingAll] = useState(false);
+  const [modoSelecaoLote, setModoSelecaoLote] = useState(false);
+  const [arquivosSelecionados, setArquivosSelecionados] = useState<Set<string>>(new Set());
+  const [processandoLote, setProcessandoLote] = useState(false);
   
   // Estados para edição
   const [isEditing, setIsEditing] = useState(false);
@@ -281,10 +285,10 @@ export default function InstanceManager({
 
   // Carregar conteúdo quando mudar o filtro
   useEffect(() => {
-    if (activeTab === "content" && viewMode === "installed") {
+    if (activeTab === "content") {
       loadInstalledContent(activeFilter);
     }
-  }, [activeFilter, activeTab, viewMode]);
+  }, [activeFilter, activeTab]);
 
   // Verificar se instância é vanilla (não mostrar mods/shaders)
   // Corrigido: usar loaderType (camelCase) que vem do backend
@@ -298,6 +302,13 @@ export default function InstanceManager({
       searchContent(searchQuery);
     }
   }, [viewMode, activeFilter, browseSource]);
+
+  useEffect(() => {
+    setArquivosSelecionados(new Set());
+    if (viewMode !== "installed") {
+      setModoSelecaoLote(false);
+    }
+  }, [activeFilter, viewMode, instanceId]);
 
   // Debounce na busca
   useEffect(() => {
@@ -382,7 +393,6 @@ export default function InstanceManager({
       // Atualizar estado correto baseado no tipo
       if (contentType === "mods") {
         setInstalledMods(formattedContent);
-        setInstalledModFileNames(new Set(files.map(f => f.toLowerCase())));
         // Enriquecer os que estão sem metadata (em background)
         enrichModsWithModrinthData(formattedContent, "mod");
       } else if (contentType === "resourcepacks") {
@@ -509,13 +519,29 @@ export default function InstanceManager({
       : "mod") as TipoProjetoCache;
     const cacheConteudo = lerCacheConteudoInstalado();
     let cacheAlterado = false;
+    let processadosNoCiclo = 0;
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.author !== "Unknown" && item.projectId) continue;
+      if (processadosNoCiclo >= LIMITE_ENRIQUECIMENTO_POR_CICLO) break;
+
+      const registroExistente = obterRegistroCacheConteudo(
+        cacheConteudo,
+        instanceId,
+        tipoProjeto,
+        item.fileName
+      );
+      if (
+        registroExistente &&
+        !registroExistente.projectId &&
+        Date.now() - registroExistente.atualizadoEm <= TTL_RETENTATIVA_ENRIQUECIMENTO_MS
+      ) {
+        continue;
+      }
 
       try {
-        const consultas = gerarConsultasArquivo(item.fileName).slice(0, 2);
+        const consultas = gerarConsultasArquivo(item.fileName).slice(0, 1);
         if (consultas.length === 0) continue;
 
         const hitsUnicos = new Map<string, any>();
@@ -528,11 +554,12 @@ export default function InstanceManager({
                 consulta.replace(/-/g, "+"),
               ].filter((q) => q.trim().length > 0)
             )
-          );
+          ).slice(0, 1);
 
           for (const termoBusca of variacoesConsulta) {
             const resultadosBusca: any[] = await invoke("search_mods_online", {
               query: termoBusca,
+              platform: "modrinth",
               contentType: projectType,
             });
 
@@ -556,6 +583,7 @@ export default function InstanceManager({
             }
           }
         }
+        processadosNoCiclo += 1;
 
         const bestMatch = escolherMelhorHitProjeto(consultas, Array.from(hitsUnicos.values()));
         if (bestMatch) {
@@ -582,6 +610,20 @@ export default function InstanceManager({
             projectType: tipoProjeto,
             latestVersion: enrichedItems[i].latestVersion,
             updateAvailable: enrichedItems[i].updateAvailable,
+          });
+          cacheAlterado = true;
+        } else {
+          definirRegistroCacheConteudo(cacheConteudo, instanceId, tipoProjeto, item.fileName, {
+            name: item.name,
+            author: item.author,
+            icon: item.icon,
+            projectId: undefined,
+            source: "modrinth",
+            projectType: tipoProjeto,
+            latestVersion: item.latestVersion,
+            updateAvailable: false,
+            updateFileName: undefined,
+            updateDownloadUrl: undefined,
           });
           cacheAlterado = true;
         }
@@ -877,7 +919,6 @@ export default function InstanceManager({
         salvarCacheConteudoInstalado(cacheConteudo);
 
         await loadInstalledContent(activeFilter);
-        setViewMode("installed");
         return;
       }
 
@@ -955,7 +996,6 @@ export default function InstanceManager({
       salvarCacheConteudoInstalado(cacheConteudo);
 
       await loadInstalledContent(activeFilter);
-      setViewMode("installed");
     } catch (error) {
       console.error("Erro ao instalar:", error);
       alert(`Erro: ${error}`);
@@ -966,9 +1006,34 @@ export default function InstanceManager({
 
   const toggleMod = async (mod: InstalledMod) => {
     const tipoProjeto = tipoProjetoPorFiltro(activeFilter);
-    atualizarListaPorTipo(tipoProjeto, (prev) =>
-      prev.map((m) => (m.fileName === mod.fileName ? { ...m, enabled: !m.enabled } : m))
-    );
+    try {
+      const novoNomeArquivo = await invoke<string>("toggle_project_file_enabled", {
+        instanceId,
+        projectType: tipoProjeto,
+        fileName: mod.fileName,
+        enabled: !mod.enabled,
+      });
+
+      const cacheConteudo = lerCacheConteudoInstalado();
+      const registroAtual = obterRegistroCacheConteudo(
+        cacheConteudo,
+        instanceId,
+        tipoProjeto,
+        mod.fileName
+      );
+      if (registroAtual) {
+        removerRegistroCacheConteudo(cacheConteudo, instanceId, tipoProjeto, mod.fileName);
+        definirRegistroCacheConteudo(cacheConteudo, instanceId, tipoProjeto, novoNomeArquivo, {
+          ...registroAtual,
+        });
+        salvarCacheConteudoInstalado(cacheConteudo);
+      }
+
+      await loadInstalledContent(activeFilter);
+    } catch (error) {
+      console.error("Erro ao alternar estado do arquivo:", error);
+      alert(`Erro ao alterar estado: ${error}`);
+    }
   };
 
   const removerConteudoInstalado = async (mod: InstalledMod, filtro: ContentFilter) => {
@@ -994,6 +1059,66 @@ export default function InstanceManager({
   const deleteMod = async (mod: InstalledMod) => {
     if (!confirm(`Remover "${mod.name}"?`)) return;
     await removerConteudoInstalado(mod, activeFilter);
+  };
+
+  const alternarSelecaoArquivo = (fileName: string) => {
+    setArquivosSelecionados((anterior) => {
+      const proximo = new Set(anterior);
+      if (proximo.has(fileName)) {
+        proximo.delete(fileName);
+      } else {
+        proximo.add(fileName);
+      }
+      return proximo;
+    });
+  };
+
+  const selecionarTodosArquivosPagina = (lista: InstalledMod[]) => {
+    const nomesPagina = lista.map((item) => item.fileName);
+    const todosSelecionados = nomesPagina.every((nome) => arquivosSelecionados.has(nome));
+    setArquivosSelecionados((anterior) => {
+      const proximo = new Set(anterior);
+      if (todosSelecionados) {
+        nomesPagina.forEach((nome) => proximo.delete(nome));
+      } else {
+        nomesPagina.forEach((nome) => proximo.add(nome));
+      }
+      return proximo;
+    });
+  };
+
+  const executarAcaoEmLote = async (
+    acao: "remover" | "ativar" | "desativar",
+    itensAlvo: InstalledMod[]
+  ) => {
+    if (itensAlvo.length === 0 || processandoLote) return;
+    const tipoProjeto = tipoProjetoPorFiltro(activeFilter);
+    setProcessandoLote(true);
+    try {
+      for (const item of itensAlvo) {
+        if (acao === "remover") {
+          await removerConteudoInstalado(item, activeFilter);
+          continue;
+        }
+
+        const deveFicarAtivo = acao === "ativar";
+        if (item.enabled === deveFicarAtivo) continue;
+        await invoke("toggle_project_file_enabled", {
+          instanceId,
+          projectType: tipoProjeto,
+          fileName: item.fileName,
+          enabled: deveFicarAtivo,
+        });
+      }
+
+      setArquivosSelecionados(new Set());
+      await loadInstalledContent(activeFilter);
+    } catch (error) {
+      console.error("Erro ao executar ação em lote:", error);
+      alert(`Erro ao processar itens selecionados: ${error}`);
+    } finally {
+      setProcessandoLote(false);
+    }
   };
 
   const atualizarItemInstalado = async (item: InstalledMod, filtro: ContentFilter) => {
@@ -1264,8 +1389,30 @@ export default function InstanceManager({
     (currentPage - 1) * itemsPerPage,
     currentPage * itemsPerPage
   );
+  const itensSelecionados = currentContent.filter((item) =>
+    arquivosSelecionados.has(item.fileName)
+  );
+  const todosSelecionadosNaPagina =
+    paginatedContent.length > 0 &&
+    paginatedContent.every((item) => arquivosSelecionados.has(item.fileName));
   const quantidadeAtualizaveis = filteredContent.filter((item) => item.updateAvailable).length;
   const mostrarControlesAtualizacao = quantidadeAtualizaveis > 0 || updatingAll;
+  const idsProjetosInstalados = new Set(
+    currentContent
+      .map((item) => (item.projectId ? String(item.projectId).toLowerCase() : ""))
+      .filter((item) => item.length > 0)
+  );
+
+  const projetoJaInstalado = (item: SearchResult) => {
+    const idProjeto = item.id.toLowerCase();
+    if (idsProjetosInstalados.has(idProjeto)) return true;
+
+    const slug = item.slug.toLowerCase();
+    if (!slug) return false;
+    return currentContent.some((instalado) =>
+      instalado.fileName.toLowerCase().includes(slug)
+    );
+  };
 
   // Filtros disponíveis baseado no tipo de instância
   const availableFilters: ContentFilter[] = isVanilla 
@@ -1572,13 +1719,29 @@ export default function InstanceManager({
               </div>
 
               {viewMode === "installed" ? (
-                <button
-                  onClick={() => setViewMode("browse")}
-                  className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-black px-4 py-2 rounded-lg font-medium text-sm transition-all whitespace-nowrap"
-                >
-                  <Plus size={16} />
-                  Adicionar conteúdo
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setModoSelecaoLote((anterior) => !anterior);
+                      setArquivosSelecionados(new Set());
+                    }}
+                    className={cn(
+                      "px-3 py-2 rounded-lg text-xs font-bold border transition-all",
+                      modoSelecaoLote
+                        ? "bg-white/15 border-white/25 text-white"
+                        : "bg-white/5 border-white/10 text-white/60 hover:text-white"
+                    )}
+                  >
+                    {modoSelecaoLote ? "Cancelar seleção" : "Selecionar"}
+                  </button>
+                  <button
+                    onClick={() => setViewMode("browse")}
+                    className="flex items-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-black px-4 py-2 rounded-lg font-medium text-sm transition-all whitespace-nowrap"
+                  >
+                    <Plus size={16} />
+                    Adicionar conteúdo
+                  </button>
+                </div>
               ) : (
                 <div className="flex bg-white/5 p-1 rounded-lg border border-white/10">
                   <button
@@ -1632,24 +1795,52 @@ export default function InstanceManager({
                 )}
               </div>
 
-              {viewMode === "installed" && totalPages > 1 && (
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: Math.min(totalPages, 3) }, (_, i) => i + 1).map((page) => (
+              <div className="flex items-center gap-2">
+                {viewMode === "installed" && modoSelecaoLote && itensSelecionados.length > 0 && (
+                  <>
                     <button
-                      key={page}
-                      onClick={() => setCurrentPage(page)}
-                      className={cn(
-                        "w-7 h-7 rounded-lg text-xs font-medium transition-all",
-                        currentPage === page
-                          ? "bg-emerald-500 text-black"
-                          : "bg-white/5 text-white/50 hover:bg-white/10"
-                      )}
+                      onClick={() => executarAcaoEmLote("ativar", itensSelecionados)}
+                      disabled={processandoLote}
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-40 transition-all"
                     >
-                      {page}
+                      Ativar ({itensSelecionados.length})
                     </button>
-                  ))}
-                </div>
-              )}
+                    <button
+                      onClick={() => executarAcaoEmLote("desativar", itensSelecionados)}
+                      disabled={processandoLote}
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 disabled:opacity-40 transition-all"
+                    >
+                      Desativar
+                    </button>
+                    <button
+                      onClick={() => executarAcaoEmLote("remover", itensSelecionados)}
+                      disabled={processandoLote}
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-500/15 text-red-300 hover:bg-red-500/25 disabled:opacity-40 transition-all"
+                    >
+                      Excluir
+                    </button>
+                  </>
+                )}
+
+                {viewMode === "installed" && totalPages > 1 && (
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: Math.min(totalPages, 3) }, (_, i) => i + 1).map((page) => (
+                      <button
+                        key={page}
+                        onClick={() => setCurrentPage(page)}
+                        className={cn(
+                          "w-7 h-7 rounded-lg text-xs font-medium transition-all",
+                          currentPage === page
+                            ? "bg-emerald-500 text-black"
+                            : "bg-white/5 text-white/50 hover:bg-white/10"
+                        )}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* List */}
@@ -1675,7 +1866,19 @@ export default function InstanceManager({
                 ) : (
                   <div>
                     <div className="px-6 py-2 flex items-center text-xs text-white/40 border-b border-white/5 sticky top-0 bg-[#0d0d0e]">
-                      <div className="w-8" />
+                      <div className="w-8 flex items-center justify-center">
+                        <input
+                          type="checkbox"
+                          checked={todosSelecionadosNaPagina}
+                          onChange={() => selecionarTodosArquivosPagina(paginatedContent)}
+                          className={cn(
+                            "w-4 h-4 rounded border-white/20 bg-white/5 transition-opacity",
+                            modoSelecaoLote
+                              ? "opacity-100"
+                              : "opacity-0 pointer-events-none"
+                          )}
+                        />
+                      </div>
                       <div className="flex-1 ml-3">Nome</div>
                       <div className="w-48">Versão</div>
                       {mostrarControlesAtualizacao && (
@@ -1709,8 +1912,20 @@ export default function InstanceManager({
 
                     {paginatedContent.map((mod: InstalledMod) => (
                       <div key={mod.fileName} className="px-6 py-3 flex items-center hover:bg-white/2 border-b border-white/5 group">
-                        <div className="w-8">
-                          <input type="checkbox" className="w-4 h-4 rounded border-white/20 bg-white/5" />
+                        <div
+                          className={cn(
+                            "w-8 flex items-center justify-center transition-opacity",
+                            modoSelecaoLote || arquivosSelecionados.has(mod.fileName)
+                              ? "opacity-100"
+                              : "opacity-0 group-hover:opacity-100"
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={arquivosSelecionados.has(mod.fileName)}
+                            onChange={() => alternarSelecaoArquivo(mod.fileName)}
+                            className="w-4 h-4 rounded border-white/20 bg-white/5"
+                          />
                         </div>
 
                         <div className="w-10 h-10 rounded-lg bg-white/5 border border-white/10 overflow-hidden flex items-center justify-center ml-2">
@@ -1828,10 +2043,7 @@ export default function InstanceManager({
                             </div>
 
                             {(() => {
-                              // Verificar se algum arquivo instalado contém o slug do mod
-                              const isInstalled = Array.from(installedModFileNames).some(
-                                fileName => fileName.includes(item.slug.toLowerCase())
-                              );
+                              const isInstalled = projetoJaInstalado(item);
                               
                               if (isInstalled) {
                                 return (
