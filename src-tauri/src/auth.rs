@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256}; // Add sha2 to Cargo.toml
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use tauri::State; // Add base64 to Cargo.toml
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 // Prism Launcher Client ID (Supports localhost redirect & PKCE)
 const CLIENT_ID: &str = "ba495809-4e0c-442d-a617-65715c2b9608";
@@ -100,10 +102,17 @@ pub async fn start_microsoft_login(
 
     // 4. Open Browser
     #[cfg(target_os = "windows")]
-    std::process::Command::new("cmd")
-        .args(["/C", "start", "", &auth_url.replace("&", "^&")]) // Escape & for cmd
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        std::process::Command::new("cmd")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/C", "start", "", &auth_url.replace("&", "^&")]) // Escape & for cmd
+            .spawn()
+            .map_err(|e| format!("Falha ao abrir navegador: {}", e))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    open::that(&auth_url).map_err(|e| format!("Falha ao abrir navegador: {}", e))?;
 
     // 5. Wait for Code
     let mut code = String::new();

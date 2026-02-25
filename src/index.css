@@ -231,7 +231,7 @@ svg {
   border-top-right-radius: 0;
   border-bottom-left-radius: 0;
   box-shadow: none;
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 .scrollbar-hide::-webkit-scrollbar {

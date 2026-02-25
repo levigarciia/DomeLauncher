@@ -1,4 +1,9 @@
 use super::*;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -229,7 +234,10 @@ pub(super) async fn install_forge_loader(
 
     let mut tentativas: Vec<String> = Vec::new();
     for modo in ["--installClient", "--installServer"] {
-        let output = std::process::Command::new("java")
+        let mut comando_instalador = std::process::Command::new("java");
+        #[cfg(target_os = "windows")]
+        comando_instalador.creation_flags(CREATE_NO_WINDOW);
+        let output = comando_instalador
             .args(["-jar", instalador_str, modo])
             .current_dir(instance_path)
             .output()
@@ -398,8 +406,11 @@ pub(super) async fn install_neoforge_loader(
     std::fs::write(&installer_path, bytes).map_err(|e| e.to_string())?;
 
     // Executar installer
-    let output = std::process::Command::new("java")
-        .args(&["-jar", installer_path.to_str().unwrap(), "--installServer"])
+    let mut comando_instalador = std::process::Command::new("java");
+    #[cfg(target_os = "windows")]
+    comando_instalador.creation_flags(CREATE_NO_WINDOW);
+    let output = comando_instalador
+        .args(["-jar", installer_path.to_str().unwrap(), "--installServer"])
         .current_dir(instance_path)
         .output()
         .map_err(|e| e.to_string())?;

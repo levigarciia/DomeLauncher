@@ -589,6 +589,26 @@ async fn resolver_versao_loader_importacao(
     versao_minecraft: &str,
     versao_sugerida: Option<&str>,
 ) -> Result<String, String> {
+    if loader_normalizado == "fabric" {
+        let versoes_compativeis = buscar_versoes_fabric_compativeis(versao_minecraft).await?;
+        if versoes_compativeis.is_empty() {
+            return Err(format!(
+                "Nenhuma versão do Fabric disponível para Minecraft {}.",
+                versao_minecraft
+            ));
+        }
+
+        if let Some(versao) = escolher_versao_fabric_compativel(
+            &versoes_compativeis,
+            versao_sugerida,
+            versao_minecraft,
+        ) {
+            return Ok(versao);
+        }
+
+        return Ok(versoes_compativeis[0].clone());
+    }
+
     if let Some(versao) = versao_sugerida.map(|v| v.trim()).filter(|v| !v.is_empty()) {
         if loader_normalizado == "forge" {
             if versao.starts_with(&format!("{}-", versao_minecraft)) {
@@ -618,6 +638,125 @@ async fn resolver_versao_loader_importacao(
         .into_iter()
         .next()
         .ok_or_else(|| format!("Nenhuma versão disponível para loader {}.", loader_normalizado))
+}
+
+async fn buscar_versoes_fabric_compativeis(versao_minecraft: &str) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP do Fabric: {}", e))?;
+
+    let url = format!(
+        "https://meta.fabricmc.net/v2/versions/loader/{}",
+        versao_minecraft
+    );
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao buscar versões do Fabric para {}: {}", versao_minecraft, e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "API do Fabric retornou erro ({}) para Minecraft {}.",
+            response.status(),
+            versao_minecraft
+        ));
+    }
+
+    let payload: Vec<serde_json::Value> = response
+        .json()
+        .await
+        .map_err(|e| format!("Erro ao parsear versões do Fabric: {}", e))?;
+
+    let mut versoes = Vec::new();
+    let mut vistos = std::collections::HashSet::new();
+
+    for item in payload {
+        if let Some(versao_loader) = item["loader"]["version"].as_str() {
+            let versao_limpa = versao_loader.trim();
+            if !versao_limpa.is_empty() && vistos.insert(versao_limpa.to_string()) {
+                versoes.push(versao_limpa.to_string());
+            }
+        }
+    }
+
+    Ok(versoes)
+}
+
+fn escolher_versao_fabric_compativel(
+    versoes_compativeis: &[String],
+    versao_sugerida: Option<&str>,
+    versao_minecraft: &str,
+) -> Option<String> {
+    let sugestao = versao_sugerida.map(|v| v.trim()).filter(|v| !v.is_empty())?;
+    let candidatos = gerar_candidatos_versao_fabric(sugestao, versao_minecraft);
+
+    for candidato in candidatos {
+        if let Some(versao) = versoes_compativeis
+            .iter()
+            .find(|v| v.eq_ignore_ascii_case(&candidato))
+        {
+            return Some(versao.clone());
+        }
+    }
+
+    let sugestao_lower = sugestao.to_lowercase();
+    let mut versoes_ordenadas = versoes_compativeis.to_vec();
+    versoes_ordenadas.sort_by_key(|v| std::cmp::Reverse(v.len()));
+
+    versoes_ordenadas
+        .into_iter()
+        .find(|v| sugestao_lower.contains(&v.to_lowercase()))
+}
+
+fn gerar_candidatos_versao_fabric(sugestao: &str, versao_minecraft: &str) -> Vec<String> {
+    let mut candidatos = Vec::new();
+
+    fn adicionar_candidato(candidatos: &mut Vec<String>, valor: &str) {
+        let valor_limpo = valor.trim();
+        if valor_limpo.is_empty() {
+            return;
+        }
+        if candidatos
+            .iter()
+            .any(|existente: &String| existente.eq_ignore_ascii_case(valor_limpo))
+        {
+            return;
+        }
+        candidatos.push(valor_limpo.to_string());
+    }
+
+    adicionar_candidato(&mut candidatos, sugestao);
+
+    if let Some(ultimo) = sugestao.rsplit(':').next() {
+        adicionar_candidato(&mut candidatos, ultimo);
+    }
+
+    let sugestao_lower = sugestao.to_lowercase();
+    let prefixos = ["fabric-loader-", "fabric_loader-", "fabric-", "loader-"];
+    for prefixo in prefixos {
+        if sugestao_lower.starts_with(prefixo) && sugestao.len() > prefixo.len() {
+            adicionar_candidato(&mut candidatos, &sugestao[prefixo.len()..]);
+        }
+    }
+
+    let marcador_plus = format!("+{}", versao_minecraft);
+    let marcador_hifen = format!("-{}", versao_minecraft);
+    let snapshot = candidatos.clone();
+    for candidato in snapshot {
+        if let Some(base) = candidato.strip_suffix(&marcador_plus) {
+            adicionar_candidato(&mut candidatos, base);
+        }
+        if let Some(base) = candidato.strip_suffix(&marcador_hifen) {
+            adicionar_candidato(&mut candidatos, base);
+        }
+        if let Some((base, _)) = candidato.split_once('+') {
+            adicionar_candidato(&mut candidatos, base);
+        }
+    }
+
+    candidatos
 }
 
 async fn criar_instancia_base_importada(

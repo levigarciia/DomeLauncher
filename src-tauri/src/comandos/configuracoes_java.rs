@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 // ===== GERENCIAMENTO AUTOMÁTICO DE JAVA =====
 // Inspirado no HeliosLauncher (JavaGuard): detecta instalações, valida versões,
 // baixa do Adoptium automaticamente quando necessário
@@ -187,11 +190,11 @@ pub async fn detect_java_installations() -> Result<Vec<JavaInfo>, String> {
     }
 
     // 4. Verificar se "java" está no PATH
-    if let Ok(output) = tokio::process::Command::new("java")
-        .arg("-version")
-        .output()
-        .await
-    {
+    let mut comando_java_path = tokio::process::Command::new("java");
+    comando_java_path.arg("-version");
+    #[cfg(target_os = "windows")]
+    comando_java_path.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(output) = comando_java_path.output().await {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if let Some(info) = parse_java_version_output(&stderr, "java", false) {
             // Verificar se não é duplicata
@@ -241,11 +244,11 @@ fn get_required_java_major(mc_version: &str) -> u32 {
 
 /// Probar un ejecutable de Java para obtener info de versión
 pub async fn probe_java(exe_path: &std::path::Path, is_managed: bool) -> Option<JavaInfo> {
-    let output = tokio::process::Command::new(exe_path)
-        .arg("-version")
-        .output()
-        .await
-        .ok()?;
+    let mut comando_probe = tokio::process::Command::new(exe_path);
+    comando_probe.arg("-version");
+    #[cfg(target_os = "windows")]
+    comando_probe.creation_flags(CREATE_NO_WINDOW);
+    let output = comando_probe.output().await.ok()?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     parse_java_version_output(
