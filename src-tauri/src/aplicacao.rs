@@ -9,7 +9,7 @@ use tauri::State;
 use urlencoding;
 
 mod bootstrap;
-mod importacao_exportacao;
+pub(crate) mod importacao_exportacao;
 mod instancias_basicas;
 mod instancias_criacao;
 mod lancamento_jogo;

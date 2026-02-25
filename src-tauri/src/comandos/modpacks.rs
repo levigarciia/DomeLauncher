@@ -7,6 +7,7 @@ use tauri::State;
 pub struct ModpackInfo {
     project_id: String,
     version_id: String,
+    file_id: Option<String>,
     name: String,
     author: String,
     icon: Option<String>,

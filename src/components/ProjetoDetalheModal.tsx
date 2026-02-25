@@ -54,6 +54,7 @@ interface ArquivoProjeto {
   url: string;
   filename: string;
   primary?: boolean;
+  hashes?: Record<string, string>;
 }
 
 interface VersaoProjetoModrinth {
@@ -642,6 +643,7 @@ export default function ProjetoDetalheModal({
         let loaderSelecionado: "vanilla" | "fabric" | "forge" | "neoforge" = "vanilla";
         let arquivoModpackUrl = "";
         let arquivoModpackNome = "";
+        let arquivoModpackHash: string | null = null;
         let versaoInstalada = "latest";
         let versaoId = "";
 
@@ -663,6 +665,10 @@ export default function ProjetoDetalheModal({
           versaoMinecraft = versaoIdeal;
           arquivoModpackUrl = arquivoModpack.url;
           arquivoModpackNome = arquivoModpack.filename;
+          arquivoModpackHash =
+            arquivoModpack.hashes?.sha1 ||
+            arquivoModpack.hashes?.sha512 ||
+            null;
           versaoInstalada = versaoModpackIdeal.version_number;
           versaoId = versaoModpackIdeal.id;
         } else {
@@ -675,6 +681,7 @@ export default function ProjetoDetalheModal({
           loaderSelecionado = normalizarLoaderModpack(dadosCurseforge.loaderType);
           arquivoModpackUrl = dadosCurseforge.downloadUrl;
           arquivoModpackNome = dadosCurseforge.fileName;
+          arquivoModpackHash = null;
           versaoInstalada = dadosCurseforge.versaoModpack || "latest";
           versaoId = dadosCurseforge.versaoModpack || "";
         }
@@ -738,6 +745,7 @@ export default function ProjetoDetalheModal({
           modpackInfo: {
             projectId: projeto.id,
             versionId: versaoId,
+            fileId: arquivoModpackHash,
             name: nomeBaseInstancia,
             author: projetoExibicao.author,
             icon: projetoExibicao.icon_url,

@@ -896,23 +896,24 @@ fn adicionar_diretorio_ao_zip(
     Ok(())
 }
 
-#[tauri::command]
-pub(crate) async fn exportar_instancia(
-    instance_id: String,
-    destino: Option<String>,
-    state: State<'_, LauncherState>,
-) -> Result<ResultadoExportacao, String> {
-    let instancia = obter_instancia_por_id(&state, &instance_id)?;
+fn resolver_pasta_destino_exportacao(destino: Option<&str>) -> std::path::PathBuf {
+    if let Some(dest) = destino {
+        return std::path::PathBuf::from(dest);
+    }
 
-    // Diretório de destino: fornecido ou Downloads do usuário
-    let pasta_destino = if let Some(ref dest) = destino {
-        std::path::PathBuf::from(dest)
-    } else {
-        let downloads = std::env::var("USERPROFILE")
-            .map(|perfil| std::path::PathBuf::from(perfil).join("Downloads"))
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
-        downloads
-    };
+    std::env::var("USERPROFILE")
+        .map(|perfil| std::path::PathBuf::from(perfil).join("Downloads"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
+fn exportar_instancia_interno(
+    state: &LauncherState,
+    instance_id: &str,
+    destino: Option<&str>,
+    incluir_saves: bool,
+) -> Result<ResultadoExportacao, String> {
+    let instancia = obter_instancia_por_id(state, instance_id)?;
+    let pasta_destino = resolver_pasta_destino_exportacao(destino);
 
     if !pasta_destino.exists() {
         std::fs::create_dir_all(&pasta_destino)
@@ -972,10 +973,18 @@ pub(crate) async fn exportar_instancia(
     }
 
     // Pastas do jogo para incluir
-    let pastas = [
-        "mods", "resourcepacks", "shaderpacks", "saves", "config",
-        "defaultconfigs", "kubejs", "scripts",
+    let mut pastas = vec![
+        "mods",
+        "resourcepacks",
+        "shaderpacks",
+        "config",
+        "defaultconfigs",
+        "kubejs",
+        "scripts"
     ];
+    if incluir_saves {
+        pastas.push("saves");
+    }
     for pasta in pastas {
         let caminho_pasta = instancia.path.join(pasta);
         adicionar_diretorio_ao_zip(&mut zip, &caminho_pasta, pasta, options)?;
@@ -1006,6 +1015,35 @@ pub(crate) async fn exportar_instancia(
         caminho_arquivo: Some(caminho_zip.to_string_lossy().to_string()),
         mensagem: format!("Instância exportada como {}", nome_arquivo),
     })
+}
+
+pub(crate) fn exportar_instancia_social_sem_saves(
+    state: &LauncherState,
+    instance_id: &str,
+) -> Result<ResultadoExportacao, String> {
+    let pasta_temp = std::env::temp_dir()
+        .join("dome-social-sync")
+        .join("outgoing");
+    if !pasta_temp.exists() {
+        std::fs::create_dir_all(&pasta_temp)
+            .map_err(|e| format!("Erro ao criar pasta temporaria de sync social: {}", e))?;
+    }
+
+    exportar_instancia_interno(
+        state,
+        instance_id,
+        Some(pasta_temp.to_string_lossy().as_ref()),
+        false
+    )
+}
+
+#[tauri::command]
+pub(crate) async fn exportar_instancia(
+    instance_id: String,
+    destino: Option<String>,
+    state: State<'_, LauncherState>,
+) -> Result<ResultadoExportacao, String> {
+    exportar_instancia_interno(&state, &instance_id, destino.as_deref(), true)
 }
 
 #[tauri::command]

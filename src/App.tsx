@@ -11,6 +11,7 @@ import {
   Plus,
   Search,
   Settings,
+  Users,
   User,
 } from "./iconesPixelados";
 import { AnimatePresence, motion } from "framer-motion";
@@ -39,6 +40,14 @@ export interface MinecraftAccount {
   name: string;
   access_token: string;
   expires_at?: number;
+}
+
+interface ModpackInstancia {
+  projectId: string;
+  versionId: string;
+  fileId?: string | null;
+  source: "modrinth" | "curseforge";
+  name: string;
 }
 
 const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
@@ -97,6 +106,7 @@ export default function App() {
   const [contasMinecraft, setContasMinecraft] = useState<MinecraftAccount[]>([]);
   const [carregandoContasMinecraft, setCarregandoContasMinecraft] = useState(false);
   const [menuContaAberto, setMenuContaAberto] = useState(false);
+  const [socialDrawerAberto, setSocialDrawerAberto] = useState(false);
   const ultimaAssinaturaPresence = useRef<string>("");
   const menuContaRef = useRef<HTMLDivElement | null>(null);
 
@@ -253,6 +263,7 @@ export default function App() {
 
   useEffect(() => {
     setMenuContaAberto(false);
+    setSocialDrawerAberto(false);
   }, [activeTab]);
 
   useEffect(() => {
@@ -562,6 +573,78 @@ export default function App() {
   }, [instanciaAtiva, montarPresenceLauncher, servidorPorInstancia, atualizarPresenceDiscord]);
 
   useEffect(() => {
+    let ativo = true;
+
+    const publicarAtividadeSocial = async () => {
+      if (!instanciaAtiva) {
+        window.dispatchEvent(new CustomEvent("dome:social-atividade-atualizada", {
+          detail: {
+            emJogo: false,
+            atividadeAtual: {
+              tipo: "launcher",
+              atualizadoEm: new Date().toISOString(),
+            },
+          },
+        }));
+        return;
+      }
+
+      const servidor = servidorPorInstancia[instanciaAtiva.id] ?? null;
+      let modpack: ModpackInstancia | null = null;
+      try {
+        modpack = await invoke<ModpackInstancia | null>("get_modpack_info", {
+          instanceId: instanciaAtiva.id,
+        });
+      } catch {
+        modpack = null;
+      }
+      if (!ativo) return;
+
+      const atividadeAtual = modpack?.projectId && modpack?.versionId
+        ? {
+            tipo: "modpack_exato",
+            instanciaId: instanciaAtiva.id,
+            instanciaNome: instanciaAtiva.name,
+            servidor,
+            source: modpack.source,
+            projectId: modpack.projectId,
+            versionId: modpack.versionId,
+            fileId: modpack.fileId ?? null,
+            modpackNome: modpack.name,
+            versaoMinecraft: instanciaAtiva.version,
+            loader: (instanciaAtiva.loader_type || instanciaAtiva.mc_type || "vanilla").toLowerCase(),
+            atualizadoEm: new Date().toISOString(),
+          }
+        : {
+            tipo: "instancia_personalizada",
+            instanciaId: instanciaAtiva.id,
+            instanciaNome: instanciaAtiva.name,
+            servidor,
+            source: null,
+            projectId: null,
+            versionId: null,
+            fileId: null,
+            modpackNome: null,
+            versaoMinecraft: instanciaAtiva.version,
+            loader: (instanciaAtiva.loader_type || instanciaAtiva.mc_type || "vanilla").toLowerCase(),
+            atualizadoEm: new Date().toISOString(),
+          };
+
+      window.dispatchEvent(new CustomEvent("dome:social-atividade-atualizada", {
+        detail: {
+          emJogo: true,
+          atividadeAtual,
+        },
+      }));
+    };
+
+    publicarAtividadeSocial();
+    return () => {
+      ativo = false;
+    };
+  }, [instanciaAtiva, servidorPorInstancia]);
+
+  useEffect(() => {
     return () => {
       invoke("encerrar_discord_presence").catch(() => undefined);
     };
@@ -856,7 +939,18 @@ export default function App() {
               )}
             </div>
 
-            <div className="h-[20px] w-[144px]" />
+            <div className="flex items-center gap-2">
+              {activeTab !== "instance-manager" && (
+                <button
+                  onClick={() => setSocialDrawerAberto(true)}
+                  className="inline-flex items-center gap-1 border border-white/20 bg-[#171717] px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-white/80 hover:text-white xl:hidden"
+                >
+                  <Users size={12} />
+                  Social
+                </button>
+              )}
+              <div className="h-[20px] w-[144px]" />
+            </div>
           </header>
         )}
 
@@ -1108,9 +1202,39 @@ export default function App() {
       </main>
 
       {activeTab !== "instance-manager" && (
-        <SocialSidebar usuarioMinecraft={user} />
+        <SocialSidebar
+          usuarioMinecraft={user}
+          className="hidden xl:flex w-[311px] shrink-0 overflow-y-auto scrollbar-hide"
+        />
       )}
       </div>
+
+      <AnimatePresence>
+        {activeTab !== "instance-manager" && socialDrawerAberto && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] bg-black/70 xl:hidden"
+            onClick={() => setSocialDrawerAberto(false)}
+          >
+            <motion.div
+              initial={{ x: 380 }}
+              animate={{ x: 0 }}
+              exit={{ x: 380 }}
+              transition={{ type: "tween", duration: 0.2 }}
+              className="absolute right-0 top-0 h-full"
+              onClick={(evento) => evento.stopPropagation()}
+            >
+              <SocialSidebar
+                usuarioMinecraft={user}
+                className="flex h-full w-[340px] max-w-[92vw] shrink-0 overflow-y-auto scrollbar-hide xl:hidden"
+                onFecharDrawer={() => setSocialDrawerAberto(false)}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <LoginModal
         isOpen={isLoginOpen}

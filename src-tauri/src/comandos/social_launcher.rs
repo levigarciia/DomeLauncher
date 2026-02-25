@@ -1,4 +1,25 @@
 use serde::{Deserialize, Serialize};
+use tauri::State;
+use crate::launcher::LauncherState;
+use futures::StreamExt;
+use tokio::io::AsyncWriteExt;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AtividadeSocialLauncherApi {
+    pub tipo: String,
+    pub instancia_id: Option<String>,
+    pub instancia_nome: Option<String>,
+    pub servidor: Option<String>,
+    pub source: Option<String>,
+    pub project_id: Option<String>,
+    pub version_id: Option<String>,
+    pub file_id: Option<String>,
+    pub modpack_nome: Option<String>,
+    pub versao_minecraft: Option<String>,
+    pub loader: Option<String>,
+    pub atualizado_em: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -8,6 +29,8 @@ pub struct AmigoLauncherApi {
     pub nome: String,
     pub handle: Option<String>,
     pub online: bool,
+    pub status: Option<String>,
+    pub atividade_atual: Option<AtividadeSocialLauncherApi>,
     pub ultimo_seen_em: Option<String>,
 }
 
@@ -64,6 +87,10 @@ pub struct PerfilSocialLauncherApi {
     pub contas_minecraft_vinculadas: Vec<ContaMinecraftSocialLauncherApi>,
     pub conta_minecraft_principal_uuid: Option<String>,
     pub online: bool,
+    pub status: Option<String>,
+    pub aparecer_offline: Option<bool>,
+    pub em_jogo: Option<bool>,
+    pub atividade_atual: Option<AtividadeSocialLauncherApi>,
     pub ultimo_seen_em: Option<String>,
     pub criado_em: String,
     pub atualizado_em: String,
@@ -121,6 +148,44 @@ pub struct PayloadVincularMinecraftSocialLauncherApi {
     pub uuid: String,
     pub nome: String,
     pub minecraft_access_token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadStatusSocialLauncherApi {
+    pub status_manual: Option<String>,
+    pub aparecer_offline: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RespostaStatusSocialLauncherApi {
+    pub sucesso: Option<bool>,
+    pub perfil: Option<PerfilSocialLauncherApi>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultadoExportacaoSyncSocial {
+    pub caminho_arquivo: String,
+    pub tamanho_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadUploadSyncSocial {
+    pub pedido_id: String,
+    pub token_upload: String,
+    pub caminho_arquivo: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultadoDownloadImportacaoSyncSocial {
+    pub pedido_id: String,
+    pub caminho_arquivo: String,
+    pub instancia_id: Option<String>,
+    pub mensagem: String,
 }
 
 fn normalizar_api_base_url(api_base_url: &str) -> Result<String, String> {
@@ -268,6 +333,55 @@ pub async fn save_launcher_social_profile(
 }
 
 #[tauri::command]
+pub async fn set_launcher_social_status(
+    api_base_url: String,
+    access_token: String,
+    payload: PayloadStatusSocialLauncherApi,
+) -> Result<RespostaStatusSocialLauncherApi, String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let endpoint = format!("{}/api/launcher/social/status/me", api_base);
+
+    let status_manual = payload
+        .status_manual
+        .as_deref()
+        .map(|valor| valor.trim().to_lowercase())
+        .filter(|valor| !valor.is_empty());
+    if let Some(ref status) = status_manual {
+        if status != "online" && status != "ausente" {
+            return Err("statusManual invalido. Use online ou ausente.".to_string());
+        }
+    }
+
+    let corpo = serde_json::json!({
+        "statusManual": status_manual,
+        "aparecerOffline": payload.aparecer_offline.unwrap_or(false),
+    });
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .patch(&endpoint)
+        .bearer_auth(token)
+        .json(&corpo)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao atualizar status social: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha ao atualizar status social.",
+        )
+        .await);
+    }
+
+    resposta
+        .json::<RespostaStatusSocialLauncherApi>()
+        .await
+        .map_err(|e| format!("Resposta invalida da API ao atualizar status social: {}", e))
+}
+
+#[tauri::command]
 pub async fn send_launcher_friend_request_by_handle(
     api_base_url: String,
     access_token: String,
@@ -297,6 +411,44 @@ pub async fn send_launcher_friend_request_by_handle(
         return Err(extrair_mensagem_erro_launcher(
             resposta,
             "Não foi possível enviar solicitação de amizade.",
+        )
+        .await);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cancel_launcher_friend_request(
+    api_base_url: String,
+    access_token: String,
+    request_id: String,
+) -> Result<(), String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let request_id = request_id.trim().to_string();
+    if request_id.is_empty() {
+        return Err("ID da solicitacao invalido.".to_string());
+    }
+
+    let endpoint = format!(
+        "{}/api/launcher/friends/request/{}",
+        api_base,
+        urlencoding::encode(&request_id)
+    );
+
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .delete(&endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede ao cancelar solicitacao: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Nao foi possivel cancelar solicitacao.",
         )
         .await);
     }
@@ -621,6 +773,162 @@ pub async fn logout_launcher_social(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn export_launcher_social_sync_package(
+    instance_id: String,
+    state: State<'_, LauncherState>,
+) -> Result<ResultadoExportacaoSyncSocial, String> {
+    let resultado = crate::aplicacao::importacao_exportacao::exportar_instancia_social_sem_saves(
+        &state,
+        instance_id.trim(),
+    )?;
+
+    let caminho = resultado
+        .caminho_arquivo
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if caminho.is_empty() {
+        return Err("Falha ao gerar pacote de sync social.".to_string());
+    }
+
+    let metadata = std::fs::metadata(&caminho)
+        .map_err(|e| format!("Erro ao ler tamanho do pacote de sync: {}", e))?;
+
+    Ok(ResultadoExportacaoSyncSocial {
+        caminho_arquivo: caminho,
+        tamanho_bytes: metadata.len(),
+    })
+}
+
+#[tauri::command]
+pub async fn upload_launcher_social_sync_package(
+    api_base_url: String,
+    access_token: String,
+    payload: PayloadUploadSyncSocial,
+) -> Result<serde_json::Value, String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let token = normalizar_token_social(&access_token)?;
+    let pedido_id = payload.pedido_id.trim().to_string();
+    let token_upload = payload.token_upload.trim().to_string();
+    let caminho_arquivo = payload.caminho_arquivo.trim().to_string();
+
+    if pedido_id.is_empty() || token_upload.is_empty() || caminho_arquivo.is_empty() {
+        return Err("Parametros invalidos para upload de sync social.".to_string());
+    }
+
+    let metadata = std::fs::metadata(&caminho_arquivo)
+        .map_err(|e| format!("Arquivo de sync nao encontrado: {}", e))?;
+    if metadata.len() > 2 * 1024 * 1024 * 1024 {
+        return Err("Arquivo maior que 2GB. Upload rejeitado.".to_string());
+    }
+
+    let bytes = tokio::fs::read(&caminho_arquivo)
+        .await
+        .map_err(|e| format!("Erro ao ler pacote de sync: {}", e))?;
+
+    let endpoint = format!(
+        "{}/api/launcher/social/sync/upload/{}",
+        api_base,
+        urlencoding::encode(&pedido_id)
+    );
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .post(&endpoint)
+        .bearer_auth(token)
+        .header("x-social-sync-token", token_upload)
+        .header("content-type", "application/octet-stream")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede no upload de sync social: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha no upload do pacote social.",
+        )
+        .await);
+    }
+
+    resposta
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Resposta invalida no upload de sync social: {}", e))
+}
+
+#[tauri::command]
+pub async fn download_import_launcher_social_sync_package(
+    api_base_url: String,
+    pedido_id: String,
+    token_download: String,
+    state: State<'_, LauncherState>,
+) -> Result<ResultadoDownloadImportacaoSyncSocial, String> {
+    let api_base = normalizar_api_base_url(&api_base_url)?;
+    let pedido_id = pedido_id.trim().to_string();
+    let token_download = token_download.trim().to_string();
+    if pedido_id.is_empty() || token_download.is_empty() {
+        return Err("pedidoId e tokenDownload sao obrigatorios.".to_string());
+    }
+
+    let endpoint = format!(
+        "{}/api/launcher/social/sync/download/{}?token={}",
+        api_base,
+        urlencoding::encode(&pedido_id),
+        urlencoding::encode(&token_download)
+    );
+    let client = criar_cliente_http_launcher()?;
+    let resposta = client
+        .get(&endpoint)
+        .send()
+        .await
+        .map_err(|e| format!("Erro de rede no download de sync social: {}", e))?;
+
+    if !resposta.status().is_success() {
+        return Err(extrair_mensagem_erro_launcher(
+            resposta,
+            "Falha no download do pacote social.",
+        )
+        .await);
+    }
+
+    let pasta_temp = std::env::temp_dir()
+        .join("dome-social-sync")
+        .join("incoming");
+    if !pasta_temp.exists() {
+        std::fs::create_dir_all(&pasta_temp)
+            .map_err(|e| format!("Erro ao criar pasta temporaria de download social: {}", e))?;
+    }
+
+    let nome_arquivo = format!("social-sync-{}-{}.dome", pedido_id, chrono::Utc::now().timestamp());
+    let caminho_arquivo = pasta_temp.join(nome_arquivo);
+    let mut arquivo = tokio::fs::File::create(&caminho_arquivo)
+        .await
+        .map_err(|e| format!("Erro ao criar arquivo temporario de sync: {}", e))?;
+
+    let mut stream = resposta.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let dados = chunk.map_err(|e| format!("Erro ao baixar pacote de sync: {}", e))?;
+        arquivo
+            .write_all(&dados)
+            .await
+            .map_err(|e| format!("Erro ao gravar pacote de sync em disco: {}", e))?;
+    }
+
+    let resultado_importacao = crate::aplicacao::importacao_exportacao::importar_instancia_arquivo(
+        caminho_arquivo.to_string_lossy().to_string(),
+        state,
+    )
+    .await?;
+
+    Ok(ResultadoDownloadImportacaoSyncSocial {
+        pedido_id,
+        caminho_arquivo: caminho_arquivo.to_string_lossy().to_string(),
+        instancia_id: resultado_importacao.instancia_id,
+        mensagem: resultado_importacao.mensagem,
+    })
 }
 
 fn normalizar_token_social(access_token: &str) -> Result<String, String> {
