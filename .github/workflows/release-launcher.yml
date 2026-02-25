@@ -33,7 +33,17 @@ jobs:
       - name: Instalar dependencias
         run: npm ci
 
+      - name: Obter descricao da release a partir do commit
+        id: mensagem_commit
+        shell: pwsh
+        run: |
+          $mensagem = (git log -1 --pretty=%B).Trim()
+          "corpo<<EOF" >> $env:GITHUB_OUTPUT
+          $mensagem >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
       - name: Build e publicar release
+        id: publicar_release
         uses: tauri-apps/tauri-action@v0.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,7 +54,38 @@ jobs:
           tauriScript: npm run tauri --
           tagName: ${{ github.ref_name }}
           releaseName: Dome Launcher ${{ github.ref_name }}
-          releaseBody: Release automatica gerada pelo GitHub Actions.
+          releaseBody: ${{ steps.mensagem_commit.outputs.corpo }}
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
+
+      - name: Remover assets extras da release
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = context.ref.replace("refs/tags/", "");
+            const release = await github.rest.repos.getReleaseByTag({
+              owner,
+              repo,
+              tag
+            });
+            const assets = await github.paginate(
+              github.rest.repos.listReleaseAssets,
+              {
+                owner,
+                repo,
+                release_id: release.data.id
+              }
+            );
+            const permitido = /^(Dome\.Launcher_.*_x64-setup\.exe|latest\.json)$/;
+            for (const asset of assets) {
+              if (!permitido.test(asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: asset.id
+                });
+              }
+            }
