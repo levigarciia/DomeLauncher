@@ -284,8 +284,8 @@ async fn launch_instance_com_opcoes(
     // 5. Montar Argumentos (respeitar config da instância ou global)
     let mut args = Vec::new();
 
-    // RAM: priorizar instância > global
-    let ram_mb = instance.memory.unwrap_or(settings.ram_mb);
+    // A configuração global de RAM é a fonte única para todas as instâncias.
+    let ram_mb = settings.ram_mb;
     args.push(format!("-Xmx{}M", ram_mb));
     args.push(format!("-Xms{}M", (ram_mb / 2).max(512)));
 

@@ -1652,7 +1652,7 @@ export default function SocialSidebar({
           amigosOnline={amigosOnline}
           amigosOffline={amigosOffline}
           naoLidasPorAmigo={naoLidasPorAmigo}
-          amigoSelecionadoPerfilId={amigoSelecionadoPerfilId}
+          amigoSelecionadoPerfilId={chatAberto ? amigoSelecionadoPerfilId : null}
           onAbrirChat={abrirChatComAmigo}
           onAbrirAtividade={onAbrirAtividadeAmigo}
           formatarTempoRelativo={tempoRelativo}

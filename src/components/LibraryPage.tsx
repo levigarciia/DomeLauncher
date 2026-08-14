@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react";
 import {
   Play,
   Trash2,
@@ -26,6 +26,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Instance } from "../hooks/useLauncher";
 import { cn } from "../lib/utils";
+import {
+  finalizarImportacoes,
+  iniciarImportacoes,
+  observarImportacoes,
+  obterImportacoesEmAndamento,
+} from "../stores/importacoesInstancias";
 
 // Tipos
 type ViewMode = "grid" | "list";
@@ -187,13 +193,15 @@ export default function LibraryPage({
   const [modalImportacaoAberto, setModalImportacaoAberto] = useState(false);
   const [instanciaSelecionadaId, setInstanciaSelecionadaId] = useState<string | null>(null);
   const [carregandoImportaveis, setCarregandoImportaveis] = useState(false);
-  const [importandoInstancias, setImportandoInstancias] = useState(false);
   const [instanciasImportaveis, setInstanciasImportaveis] = useState<
     InstanciaImportavelExterna[]
   >([]);
-  const [instanciasEmImportacao, setInstanciasEmImportacao] = useState<
-    InstanciaImportavelExterna[]
-  >([]);
+  const instanciasEmImportacao = useSyncExternalStore(
+    observarImportacoes,
+    obterImportacoesEmAndamento,
+    obterImportacoesEmAndamento
+  );
+  const importandoInstancias = instanciasEmImportacao.length > 0;
   const [pastasAdicionaisImportacao, setPastasAdicionaisImportacao] = useState<string[]>([]);
   const [idsSelecionadosImportacao, setIdsSelecionadosImportacao] = useState<Set<string>>(
     new Set()
@@ -647,8 +655,7 @@ export default function LibraryPage({
     );
     if (selecionadas.length === 0) return;
 
-    setImportandoInstancias(true);
-    setInstanciasEmImportacao(selecionadas);
+    iniciarImportacoes(selecionadas);
     setModalImportacaoAberto(false);
     setModalEscolhaImportacaoAberto(false);
     setErroImportacao(null);
@@ -672,8 +679,7 @@ export default function LibraryPage({
       );
       setResultadoImportacao([]);
     } finally {
-      setInstanciasEmImportacao([]);
-      setImportandoInstancias(false);
+      finalizarImportacoes();
     }
   };
 

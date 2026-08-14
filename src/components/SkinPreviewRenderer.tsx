@@ -1,14 +1,14 @@
-import React, { useRef, useEffect, useState } from 'react';
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import React, { useRef, useEffect, useState } from "react";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Loader2 } from "../iconesPixelados";
 
 // Utility functions for cape texture handling
 function createTransparentTexture(): THREE.Texture {
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 1;
-  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+  const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
   ctx.clearRect(0, 0, 1, 1);
 
   const texture = new THREE.CanvasTexture(canvas);
@@ -29,11 +29,13 @@ function applyCapeTexture(
   model.traverse((child) => {
     if ((child as THREE.Mesh).isMesh) {
       const mesh = child as THREE.Mesh;
-      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const materials = Array.isArray(mesh.material)
+        ? mesh.material
+        : [mesh.material];
 
       materials.forEach((mat: THREE.Material) => {
         if (mat instanceof THREE.MeshStandardMaterial) {
-          if (mat.name === 'cape') {
+          if (mat.name === "cape") {
             mat.map = texture || transparentTexture || null;
             mat.transparent = !texture || transparentTexture ? true : false;
             mat.metalness = 0;
@@ -56,22 +58,22 @@ function applyCapeTexture(
 
 interface SkinPreviewRendererProps {
   skinUrl: string;
-  capeUrl?: string; 
-  model?: 'classic' | 'slim';
+  capeUrl?: string;
+  model?: "classic" | "slim";
   height?: number;
   width?: number;
   className?: string;
   onReady?: () => void;
 }
 
-export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({ 
-  skinUrl, 
+export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
+  skinUrl,
   capeUrl,
-  model = 'classic',
+  model = "classic",
   height = 400,
   width = 300,
   className,
-  onReady
+  onReady,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null); // Container principal
   const mountRef = useRef<HTMLDivElement>(null); // Container EXCLUSIVO do Three.js
@@ -81,9 +83,13 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
   const actionsRef = useRef<{ [key: string]: THREE.AnimationAction }>({});
   const activeActionRef = useRef<THREE.AnimationAction | null>(null);
   const [loading, setLoading] = useState(true);
+  const [erroModelo, setErroModelo] = useState(false);
+  const [tentativa, setTentativa] = useState(0);
 
   // Ref para armazenar a função de playAnimation acessível fora do useEffect principal
-  const playAnimationRef = useRef<(name: string, once?: boolean) => void>(() => {});
+  const playAnimationRef = useRef<(name: string, once?: boolean) => void>(
+    () => {},
+  );
 
   // Cape-related state
   const capeTextureRef = useRef<THREE.Texture | null>(null);
@@ -93,31 +99,38 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
   // Efeito principal: Configuração da cena Three.js
   useEffect(() => {
     if (!mountRef.current || !containerRef.current) return;
+    setLoading(true);
+    setErroModelo(false);
 
     const initialWidth = containerRef.current.clientWidth || width || 300;
     const initialHeight = containerRef.current.clientHeight || height || 400;
 
-    const camera = new THREE.PerspectiveCamera(45, initialWidth / initialHeight, 0.1, 100);
-    camera.position.set(0, 1.1, 4.2); 
+    const camera = new THREE.PerspectiveCamera(
+      45,
+      initialWidth / initialHeight,
+      0.1,
+      100,
+    );
+    camera.position.set(0, 1.1, 4.2);
 
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setSize(initialWidth, initialHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    
+
     // Limpeza segura: remove apenas os filhos do mountRef (que é só do ThreeJS)
     while (mountRef.current.firstChild) {
-        mountRef.current.removeChild(mountRef.current.firstChild);
+      mountRef.current.removeChild(mountRef.current.firstChild);
     }
     mountRef.current.appendChild(renderer.domElement);
-    
+
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 1.0, 0); 
+    controls.target.set(0, 1.0, 0);
     controls.enablePan = false;
     controls.enableZoom = true;
-    controls.minDistance = 2.0; 
+    controls.minDistance = 2.0;
     controls.maxDistance = 8.0;
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
@@ -128,34 +141,50 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
     dirLight.position.set(-3, 5, 4);
     scene.add(dirLight);
-    
+
     const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
     scene.add(ambientLight);
 
     // Resize Observer no container principal
     const resizeObserver = new ResizeObserver(() => {
-        if (!containerRef.current || !rendererRef.current) return;
-        const newWidth = containerRef.current.clientWidth;
-        const newHeight = containerRef.current.clientHeight;
-        
-        if (newWidth === 0 || newHeight === 0) return;
+      if (!containerRef.current || !rendererRef.current) return;
+      const newWidth = containerRef.current.clientWidth;
+      const newHeight = containerRef.current.clientHeight;
 
-        camera.aspect = newWidth / newHeight;
-        camera.updateProjectionMatrix();
-        rendererRef.current.setSize(newWidth, newHeight);
+      if (newWidth === 0 || newHeight === 0) return;
+
+      camera.aspect = newWidth / newHeight;
+      camera.updateProjectionMatrix();
+      rendererRef.current.setSize(newWidth, newHeight);
     });
     resizeObserver.observe(containerRef.current);
 
-    const loader = new GLTFLoader();
-    const modelPath = model === 'slim' ? '/models/slim-player.gltf' : '/models/classic-player.gltf';
+    const gerenciadorCarregamento = new THREE.LoadingManager();
+    gerenciadorCarregamento.setURLModifier((url) => {
+      const caminho = url.split("?")[0].toLowerCase();
+      if (
+        caminho.endsWith("/steve.png") ||
+        caminho.endsWith("/sunny.png") ||
+        caminho.endsWith("/cape")
+      ) {
+        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/8QAAAABJRU5ErkJggg==";
+      }
+      return url;
+    });
+    const loader = new GLTFLoader(gerenciadorCarregamento);
+    const nomeModelo =
+      model === "slim" ? "slim-player.gltf" : "classic-player.gltf";
+    const modelPath = `${import.meta.env.BASE_URL}models/${nomeModelo}`;
 
-    loader.load(modelPath, (gltf) => {
+    loader.load(
+      modelPath,
+      (gltf) => {
         const object = gltf.scene;
-        
+
         // Ajuste definido pelo usuário
-        object.position.x = 0; 
+        object.position.x = 0;
         object.position.y = 0;
-        
+
         object.rotation.y = Math.PI / 8;
 
         modelRef.current = object;
@@ -166,89 +195,98 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
         // Mapear animações
         gltf.animations.forEach((clip) => {
-            const action = mixer.clipAction(clip);
-            actionsRef.current[clip.name] = action;
+          const action = mixer.clipAction(clip);
+          actionsRef.current[clip.name] = action;
         });
-        
-        playAnimationRef.current('idle'); 
+
+        playAnimationRef.current("idle");
 
         // Apply cape texture if available
         applyCapeTexture(object, capeTextureRef.current, transparentTexture);
 
         setLoading(false);
         if (onReady) onReady();
-    }, undefined, (error) => {
-        console.error('Error loading GLTF:', error);
+      },
+      undefined,
+      (error) => {
+        console.error("Error loading GLTF:", error);
         setLoading(false);
-    });
+        setErroModelo(true);
+      },
+    );
 
     // Animation Loop
     const clock = new THREE.Clock();
     let animationId: number;
 
     const animate = () => {
-        animationId = requestAnimationFrame(animate);
-        const delta = clock.getDelta();
-        if (mixerRef.current) mixerRef.current.update(delta);
-        controls.update();
-        renderer.render(scene, camera);
+      animationId = requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (mixerRef.current) mixerRef.current.update(delta);
+      controls.update();
+      renderer.render(scene, camera);
     };
     animate();
 
     return () => {
-        resizeObserver.disconnect(); 
-        cancelAnimationFrame(animationId);
-        if (rendererRef.current) {
-            rendererRef.current.dispose();
-            // Verifica segurança antes de remover
-            if (mountRef.current && rendererRef.current.domElement.parentNode === mountRef.current) {
-                mountRef.current.removeChild(rendererRef.current.domElement);
-            }
+      resizeObserver.disconnect();
+      cancelAnimationFrame(animationId);
+      if (rendererRef.current) {
+        rendererRef.current.dispose();
+        // Verifica segurança antes de remover
+        if (
+          mountRef.current &&
+          rendererRef.current.domElement.parentNode === mountRef.current
+        ) {
+          mountRef.current.removeChild(rendererRef.current.domElement);
         }
+      }
     };
-  }, [model]); 
+  }, [model, tentativa]);
 
   // Helpers de Animação
   const playActive = (newAction: THREE.AnimationAction, once: boolean) => {
-       const current = activeActionRef.current;
-       if (current === newAction && current.isRunning()) return;
+    const current = activeActionRef.current;
+    if (current === newAction && current.isRunning()) return;
 
-       if (current) {
-           current.fadeOut(0.2);
-       }
+    if (current) {
+      current.fadeOut(0.2);
+    }
 
-       newAction.reset();
-       newAction.fadeIn(0.2);
-       
-       if (once) {
-           newAction.setLoop(THREE.LoopOnce, 1);
-           newAction.clampWhenFinished = true;
-           const restoreIdle = (e: any) => {
-               if (e.action === newAction) {
-                   mixerRef.current?.removeEventListener('finished', restoreIdle);
-                   playAnimationRef.current('idle');
-               }
-           };
-           mixerRef.current?.addEventListener('finished', restoreIdle);
-       } else {
-           newAction.setLoop(THREE.LoopRepeat, Infinity);
-       }
-       
-       newAction.play();
-       activeActionRef.current = newAction;
+    newAction.reset();
+    newAction.fadeIn(0.2);
+
+    if (once) {
+      newAction.setLoop(THREE.LoopOnce, 1);
+      newAction.clampWhenFinished = true;
+      const restoreIdle = (e: any) => {
+        if (e.action === newAction) {
+          mixerRef.current?.removeEventListener("finished", restoreIdle);
+          playAnimationRef.current("idle");
+        }
+      };
+      mixerRef.current?.addEventListener("finished", restoreIdle);
+    } else {
+      newAction.setLoop(THREE.LoopRepeat, Infinity);
+    }
+
+    newAction.play();
+    activeActionRef.current = newAction;
   };
 
   const playAnimation = (name: string, once: boolean = false) => {
-      const actions = actionsRef.current;
-      const clipName = Object.keys(actions).find(key => key.toLowerCase().includes(name.toLowerCase()));
-      
-      if (!clipName) {
-          if (name === 'idle' && Object.keys(actions).length > 0) {
-               playActive(actions[Object.keys(actions)[0]], once);
-          }
-          return;
+    const actions = actionsRef.current;
+    const clipName = Object.keys(actions).find((key) =>
+      key.toLowerCase().includes(name.toLowerCase()),
+    );
+
+    if (!clipName) {
+      if (name === "idle" && Object.keys(actions).length > 0) {
+        playActive(actions[Object.keys(actions)[0]], once);
       }
-      playActive(actions[clipName], once);
+      return;
+    }
+    playActive(actions[clipName], once);
   };
 
   useEffect(() => {
@@ -257,33 +295,36 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
   // Load Skin
   useEffect(() => {
-     if (!modelRef.current) return;
+    if (!modelRef.current) return;
 
-     const textureLoader = new THREE.TextureLoader();
-     textureLoader.load(skinUrl, (texture) => {
-         texture.magFilter = THREE.NearestFilter;
-         texture.minFilter = THREE.NearestFilter;
-         texture.colorSpace = THREE.SRGBColorSpace;
-         texture.flipY = false;
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.load(
+      skinUrl,
+      (texture) => {
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.flipY = false;
 
-         modelRef.current?.traverse((child) => {
-             if ((child as THREE.Mesh).isMesh) {
-                 const mesh = child as THREE.Mesh;
-                 if (mesh.material) {
-                     const mat = mesh.material as THREE.MeshStandardMaterial;
-                     mat.map = texture;
-                     mat.needsUpdate = true;
-                 }
-             }
-         });
-         
-         if (!loading) {
-            // 'wave' não existe no modelo padrão modrinth, usar 'interact'
-            playAnimation('interact', true); 
-         }
+        modelRef.current?.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh;
+            if (mesh.material) {
+              const mat = mesh.material as THREE.MeshStandardMaterial;
+              mat.map = texture;
+              mat.needsUpdate = true;
+            }
+          }
+        });
 
-     }, undefined, (err) => console.error("Error loading skin texture:", err));
-
+        if (!loading) {
+          // 'wave' não existe no modelo padrão modrinth, usar 'interact'
+          playAnimation("interact", true);
+        }
+      },
+      undefined,
+      (err) => console.error("Error loading skin texture:", err),
+    );
   }, [skinUrl, loading]);
 
   // Load Cape Texture
@@ -294,18 +335,23 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
     if (capeUrl) {
       const textureLoader = new THREE.TextureLoader();
-      textureLoader.load(capeUrl, (texture) => {
-        texture.magFilter = THREE.NearestFilter;
-        texture.minFilter = THREE.NearestFilter;
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.flipY = false;
+      textureLoader.load(
+        capeUrl,
+        (texture) => {
+          texture.magFilter = THREE.NearestFilter;
+          texture.minFilter = THREE.NearestFilter;
+          texture.colorSpace = THREE.SRGBColorSpace;
+          texture.flipY = false;
 
-        capeTextureRef.current = texture;
+          capeTextureRef.current = texture;
 
-        if (modelRef.current) {
-          applyCapeTexture(modelRef.current, texture, transparentTexture);
-        }
-      }, undefined, (err) => console.error("Error loading cape texture:", err));
+          if (modelRef.current) {
+            applyCapeTexture(modelRef.current, texture, transparentTexture);
+          }
+        },
+        undefined,
+        (err) => console.error("Error loading cape texture:", err),
+      );
     } else {
       capeTextureRef.current = null;
       if (modelRef.current) {
@@ -315,24 +361,38 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
   }, [capeUrl]);
 
   const handleCanvasClick = () => {
-      playAnimation('interact', true);
+    playAnimation("interact", true);
   };
 
   return (
-    <div 
-        className={`relative flex items-center justify-center ${className || ''}`} 
-        style={{ width: '100%', height: '100%' }} 
-        ref={containerRef}
-        onClick={handleCanvasClick}
+    <div
+      className={`relative flex items-center justify-center ${className || ""}`}
+      style={{ width: "100%", height: "100%" }}
+      ref={containerRef}
+      onClick={handleCanvasClick}
     >
-        {/* Container Dedicado ao Three.js para não conflitar com Loader */}
-        <div ref={mountRef} className="absolute inset-0 w-full h-full" />
-        
-       {loading && (
-         <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-             <Loader2 className="animate-spin text-emerald-500" size={32} />
-         </div>
-       )}
+      {/* Container Dedicado ao Three.js para não conflitar com Loader */}
+      <div ref={mountRef} className="absolute inset-0 w-full h-full" />
+
+      {loading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+          <Loader2 className="animate-spin text-emerald-500" size={32} />
+        </div>
+      )}
+      {erroModelo && !loading && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center">
+          <span className="text-xs text-white/45">
+            Não foi possível carregar o modelo 3D.
+          </span>
+          <button
+            type="button"
+            onClick={() => setTentativa((valor) => valor + 1)}
+            className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-white/70 transition-colors hover:bg-white/10 hover:text-white"
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
     </div>
   );
 };

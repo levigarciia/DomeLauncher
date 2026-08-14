@@ -56,15 +56,51 @@ interface ModpackInstancia {
   icon?: string | null;
 }
 
-function normalizarUrlImagemPublica(valor: string | null | undefined): string | null {
-  if (!valor || valor.length > 2048) return null;
+async function normalizarImagemAtividade(valor: string | null | undefined): Promise<string | null> {
+  const imagem = valor?.trim();
+  if (!imagem) return null;
 
-  try {
-    const url = new URL(valor);
-    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
-  } catch {
+  if (/^https?:\/\//i.test(imagem)) {
+    if (imagem.length > 2048) return null;
+    try {
+      const url = new URL(imagem);
+      return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (
+    imagem.length > 5_000_000 ||
+    !/^data:image\/(?:png|jpe?g|webp);base64,/i.test(imagem)
+  ) {
     return null;
   }
+
+  return new Promise((resolver) => {
+    const elemento = new Image();
+    elemento.onload = () => {
+      const escala = Math.min(1, 96 / Math.max(elemento.naturalWidth, elemento.naturalHeight));
+      const largura = Math.max(1, Math.round(elemento.naturalWidth * escala));
+      const altura = Math.max(1, Math.round(elemento.naturalHeight * escala));
+      const canvas = document.createElement("canvas");
+      canvas.width = largura;
+      canvas.height = altura;
+      const contexto = canvas.getContext("2d");
+      if (!contexto) {
+        resolver(null);
+        return;
+      }
+
+      contexto.imageSmoothingEnabled = true;
+      contexto.imageSmoothingQuality = "high";
+      contexto.drawImage(elemento, 0, 0, largura, altura);
+      const resultado = canvas.toDataURL("image/webp", 0.82);
+      resolver(resultado.length <= 180_000 ? resultado : null);
+    };
+    elemento.onerror = () => resolver(null);
+    elemento.src = imagem;
+  });
 }
 
 function normalizarTextoComparacao(valor: string | null | undefined): string {
@@ -684,6 +720,9 @@ export default function App() {
       }
       if (!ativo) return;
 
+      const iconeUrl = await normalizarImagemAtividade(modpack?.icon || instanciaAtiva.icon);
+      if (!ativo) return;
+
       const atividadeAtual = modpack?.projectId && modpack?.versionId
         ? {
             tipo: "modpack_exato",
@@ -695,7 +734,7 @@ export default function App() {
             versionId: modpack.versionId,
             fileId: modpack.fileId ?? null,
             modpackNome: modpack.name,
-            iconeUrl: normalizarUrlImagemPublica(modpack.icon || instanciaAtiva.icon),
+            iconeUrl,
             versaoMinecraft: instanciaAtiva.version,
             loader: (instanciaAtiva.loader_type || instanciaAtiva.mc_type || "vanilla").toLowerCase(),
             atualizadoEm: new Date().toISOString(),
@@ -710,7 +749,7 @@ export default function App() {
             versionId: null,
             fileId: null,
             modpackNome: null,
-            iconeUrl: normalizarUrlImagemPublica(instanciaAtiva.icon),
+            iconeUrl,
             versaoMinecraft: instanciaAtiva.version,
             loader: (instanciaAtiva.loader_type || instanciaAtiva.mc_type || "vanilla").toLowerCase(),
             atualizadoEm: new Date().toISOString(),

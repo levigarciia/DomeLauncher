@@ -48,7 +48,6 @@ interface InstanceDetails {
   tempoTotalJogadoSegundos?: number;
   path: string;
   created?: string;
-  memory?: number;
   javaArgs?: string;
   mcArgs?: string;
   width?: number;
@@ -313,7 +312,6 @@ export default function InstanceManager({
   // Estados para edição
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
-  const [editMemory, setEditMemory] = useState("");
   const [editJavaArgs, setEditJavaArgs] = useState("");
   const [editWidth, setEditWidth] = useState("");
   const [editHeight, setEditHeight] = useState("");
@@ -321,6 +319,11 @@ export default function InstanceManager({
 
   const lastSearch = useRef({ query: "", filter: "", source: "" });
   const listaConteudoRef = useRef<HTMLDivElement | null>(null);
+  const arrasteIndicadorRef = useRef<{
+    ponteiroId: number;
+    inicioY: number;
+    scrollInicial: number;
+  } | null>(null);
 
   useEffect(() => {
     loadInstanceDetails();
@@ -377,7 +380,6 @@ export default function InstanceManager({
       setInstanceDetails(details);
       // Preencher campos de edição
       setEditName(details.name);
-      setEditMemory(details.memory?.toString() || "4096");
       setEditJavaArgs(details.javaArgs || "");
       setEditWidth(details.width?.toString() || "854");
       setEditHeight(details.height?.toString() || "480");
@@ -1373,13 +1375,11 @@ export default function InstanceManager({
         });
       }
 
-      const memoria = Number.parseInt(editMemory, 10);
       const largura = Number.parseInt(editWidth, 10);
       const altura = Number.parseInt(editHeight, 10);
 
       await invoke("update_instance_settings", {
         instanceId: idAtual,
-        memory: Number.isFinite(memoria) ? memoria : undefined,
         javaArgs: editJavaArgs,
         mcArgs: instanceDetails.mcArgs,
         width: Number.isFinite(largura) ? largura : undefined,
@@ -1474,6 +1474,78 @@ export default function InstanceManager({
     const topoMaximo = alturaTrilho - altura;
     const topo = (scrollTop / (scrollHeight - clientHeight)) * topoMaximo;
     setIndicadorRolagem({ altura, topo, visivel: true });
+  }, []);
+
+  const rolarAoClicarTrilho = useCallback((evento: React.MouseEvent<HTMLDivElement>) => {
+    if (evento.target !== evento.currentTarget) return;
+
+    const lista = listaConteudoRef.current;
+    if (!lista) return;
+
+    const limites = evento.currentTarget.getBoundingClientRect();
+    const posicaoClique = evento.clientY - limites.top;
+    const centroIndicador = indicadorRolagem.topo + indicadorRolagem.altura / 2;
+    const direcao = posicaoClique < centroIndicador ? -1 : 1;
+
+    lista.scrollBy({
+      top: direcao * lista.clientHeight * 0.85,
+      behavior: "smooth",
+    });
+  }, [indicadorRolagem.altura, indicadorRolagem.topo]);
+
+  const iniciarArrasteIndicador = useCallback((evento: React.PointerEvent<HTMLDivElement>) => {
+    const lista = listaConteudoRef.current;
+    if (!lista) return;
+
+    evento.preventDefault();
+    evento.stopPropagation();
+    evento.currentTarget.setPointerCapture(evento.pointerId);
+    arrasteIndicadorRef.current = {
+      ponteiroId: evento.pointerId,
+      inicioY: evento.clientY,
+      scrollInicial: lista.scrollTop,
+    };
+  }, []);
+
+  const arrastarIndicador = useCallback((evento: React.PointerEvent<HTMLDivElement>) => {
+    const lista = listaConteudoRef.current;
+    const arraste = arrasteIndicadorRef.current;
+    if (!lista || !arraste || arraste.ponteiroId !== evento.pointerId) return;
+
+    const alturaTrilho = Math.max(0, lista.clientHeight - 16);
+    const percursoIndicador = alturaTrilho - indicadorRolagem.altura;
+    const percursoConteudo = lista.scrollHeight - lista.clientHeight;
+    if (percursoIndicador <= 0 || percursoConteudo <= 0) return;
+
+    const deltaY = evento.clientY - arraste.inicioY;
+    lista.scrollTop = arraste.scrollInicial + (deltaY / percursoIndicador) * percursoConteudo;
+  }, [indicadorRolagem.altura]);
+
+  const encerrarArrasteIndicador = useCallback((evento: React.PointerEvent<HTMLDivElement>) => {
+    if (arrasteIndicadorRef.current?.ponteiroId !== evento.pointerId) return;
+    arrasteIndicadorRef.current = null;
+    if (evento.currentTarget.hasPointerCapture(evento.pointerId)) {
+      evento.currentTarget.releasePointerCapture(evento.pointerId);
+    }
+  }, []);
+
+  const rolarIndicadorComTeclado = useCallback((evento: React.KeyboardEvent<HTMLDivElement>) => {
+    const lista = listaConteudoRef.current;
+    if (!lista) return;
+
+    const deslocamentos: Record<string, number> = {
+      ArrowUp: -48,
+      ArrowDown: 48,
+      PageUp: -lista.clientHeight * 0.85,
+      PageDown: lista.clientHeight * 0.85,
+      Home: -lista.scrollHeight,
+      End: lista.scrollHeight,
+    };
+    const deslocamento = deslocamentos[evento.key];
+    if (deslocamento === undefined) return;
+
+    evento.preventDefault();
+    lista.scrollBy({ top: deslocamento, behavior: "smooth" });
   }, []);
 
   useEffect(() => {
@@ -1652,17 +1724,6 @@ export default function InstanceManager({
                         <p className="text-xs text-white/40 uppercase font-bold">Configurações</p>
                       </div>
                       <div className="p-4 space-y-4">
-                        {/* Memória RAM */}
-                        <div>
-                          <label className="text-xs text-white/40 block mb-1">Memória RAM (MB)</label>
-                          <input
-                            type="number"
-                            value={editMemory}
-                            onChange={(e) => setEditMemory(e.target.value)}
-                            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                          />
-                        </div>
-                        
                         {/* Java Args */}
                         <div>
                           <label className="text-xs text-white/40 block mb-1">Java Arguments</label>
@@ -1941,6 +2002,7 @@ export default function InstanceManager({
             {/* List */}
             <div className="relative min-h-0 flex-1">
               <div
+                id="lista-conteudo-instancia"
                 ref={listaConteudoRef}
                 onScroll={sincronizarIndicadorRolagem}
                 className="h-full overflow-y-auto scrollbar-hide"
@@ -2193,9 +2255,30 @@ export default function InstanceManager({
               </div>
 
               {indicadorRolagem.visivel && (
-                <div className="pointer-events-none absolute bottom-2 right-1 top-2 w-1 rounded-full bg-white/[0.04]">
+                <div
+                  role="scrollbar"
+                  aria-label="Rolagem da lista de conteúdos"
+                  aria-controls="lista-conteudo-instancia"
+                  aria-orientation="vertical"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(
+                    (indicadorRolagem.topo /
+                      Math.max(1, Math.max(0, (listaConteudoRef.current?.clientHeight ?? 16) - 16) - indicadorRolagem.altura)) *
+                    100
+                  )}
+                  tabIndex={0}
+                  onClick={rolarAoClicarTrilho}
+                  onKeyDown={rolarIndicadorComTeclado}
+                  className="absolute bottom-2 right-0.5 top-2 z-20 w-2 cursor-pointer rounded-full bg-white/[0.04] outline-none focus:bg-white/[0.08]"
+                >
                   <div
-                    className="absolute left-0 w-full rounded-full bg-white/20"
+                    onClick={(evento) => evento.stopPropagation()}
+                    onPointerDown={iniciarArrasteIndicador}
+                    onPointerMove={arrastarIndicador}
+                    onPointerUp={encerrarArrasteIndicador}
+                    onPointerCancel={encerrarArrasteIndicador}
+                    className="absolute left-0 w-full cursor-grab touch-none rounded-full bg-white/20 transition-colors hover:bg-white/35 active:cursor-grabbing active:bg-emerald-300/60"
                     style={{
                       height: `${indicadorRolagem.altura}px`,
                       transform: `translateY(${indicadorRolagem.topo}px)`,

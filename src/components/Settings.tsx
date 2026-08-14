@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Cpu,
-  Save,
   Monitor,
   Coffee,
   Download,
@@ -115,12 +114,12 @@ export default function Settings() {
   const [carregando, setCarregando] = useState(true);
   const [detectandoJava, setDetectandoJava] = useState(false);
   const [instalandoJava, setInstalandoJava] = useState<number | null>(null);
-  const [salvando, setSalvando] = useState(false);
-  const [salvoOk, setSalvoOk] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [jvmAberto, setJvmAberto] = useState(false);
   const [javaAberto, setJavaAberto] = useState(true);
-  const [alterado, setAlterado] = useState(false);
+  const ignorarPrimeiraPersistencia = useRef(true);
+  const configuracoesAtuais = useRef(settings);
+  const alteracoesPendentes = useRef(false);
 
   // Carregar configurações e dados
   useEffect(() => {
@@ -134,10 +133,12 @@ export default function Settings() {
         invoke<GlobalSettings>("get_settings"),
         invoke<number>("get_system_ram"),
       ]);
-      setSettings({
+      const configuracoesCarregadas = {
         ...cfg,
         cor_destaque: normalizarCorDestaque(cfg?.cor_destaque),
-      });
+      };
+      configuracoesAtuais.current = configuracoesCarregadas;
+      setSettings(configuracoesCarregadas);
       setSystemRam(ram);
       detectarJavas();
     } catch (e) {
@@ -176,30 +177,55 @@ export default function Settings() {
     chave: K,
     valor: GlobalSettings[K]
   ) => {
-    setSettings((prev) => ({ ...prev, [chave]: valor }));
-    setAlterado(true);
-    setSalvoOk(false);
+    setSettings((prev) => {
+      const proximasConfiguracoes = { ...prev, [chave]: valor };
+      configuracoesAtuais.current = proximasConfiguracoes;
+      alteracoesPendentes.current = true;
+      return proximasConfiguracoes;
+    });
+    setErro(null);
   };
 
-  const salvar = async () => {
-    setSalvando(true);
-    setErro(null);
+  const persistirConfiguracoes = useCallback(async (
+    configuracoes: GlobalSettings,
+    mostrarErro: boolean
+  ) => {
     try {
-      await invoke("save_settings", { settings });
+      await invoke("save_settings", { settings: configuracoes });
+      if (configuracoesAtuais.current === configuracoes) {
+        alteracoesPendentes.current = false;
+      }
       window.dispatchEvent(
         new CustomEvent("dome:cor-destaque-atualizada", {
-          detail: { cor: settings.cor_destaque },
+          detail: { cor: configuracoes.cor_destaque },
         })
       );
-      setSalvoOk(true);
-      setAlterado(false);
-      setTimeout(() => setSalvoOk(false), 3000);
     } catch (e: unknown) {
-      setErro(`Erro ao salvar: ${e}`);
-    } finally {
-      setSalvando(false);
+      if (mostrarErro) setErro(`Erro ao salvar: ${e}`);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (carregando) return;
+    if (ignorarPrimeiraPersistencia.current) {
+      ignorarPrimeiraPersistencia.current = false;
+      return;
+    }
+
+    const temporizador = window.setTimeout(() => {
+      void persistirConfiguracoes(settings, true);
+    }, 450);
+
+    return () => window.clearTimeout(temporizador);
+  }, [carregando, persistirConfiguracoes, settings]);
+
+  useEffect(() => {
+    return () => {
+      if (alteracoesPendentes.current) {
+        void persistirConfiguracoes(configuracoesAtuais.current, false);
+      }
+    };
+  }, [persistirConfiguracoes]);
 
   // Calcular o label da resolução selecionada
   const resolucaoAtual = RESOLUTIONS.find(
@@ -629,32 +655,6 @@ export default function Settings() {
         />
       </Secao>
 
-      {/* ===== BOTÃO SALVAR FLUTUANTE ===== */}
-      <AnimatePresence>
-        {alterado && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50"
-          >
-            <button
-              onClick={salvar}
-              disabled={salvando}
-              className="flex items-center gap-3 bg-emerald-500 text-[#0a0a0b] px-8 py-3.5 rounded-2xl font-black shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 active:scale-95 transition-all disabled:opacity-50"
-            >
-              {salvando ? (
-                <Loader2 size={18} className="animate-spin" />
-              ) : salvoOk ? (
-                <Check size={18} />
-              ) : (
-                <Save size={18} />
-              )}
-              {salvando ? "SALVANDO..." : salvoOk ? "SALVO!" : "SALVAR ALTERAÇÕES"}
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

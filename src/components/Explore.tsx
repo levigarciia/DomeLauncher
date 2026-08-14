@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Search,
   Download,
@@ -37,6 +37,28 @@ const CONTENT_TYPES = [
   { id: "shader" as ContentType, label: "Shaders", icon: Sparkles },
 ];
 
+const LIMITE_RESULTADOS_POR_PAGINA = 20;
+
+const mapearResultadoBusca = (
+  item: any,
+  tipoPadrao: ContentType
+): SearchResult => ({
+  id: String(item.id || ""),
+  title: String(item.name || item.title || "Sem nome"),
+  description: String(item.description || ""),
+  icon_url: item.iconUrl || item.icon_url || undefined,
+  author: String(item.author || "Desconhecido"),
+  downloads:
+    typeof item.downloadCount === "number"
+      ? item.downloadCount
+      : typeof item.download_count === "number"
+        ? item.download_count
+        : undefined,
+  follows: typeof item.follows === "number" ? item.follows : undefined,
+  project_type: (item.projectType || item.project_type || tipoPadrao) as TipoProjetoConteudo,
+  slug: String(item.slug || "").trim() || String(item.id || "").trim(),
+});
+
 interface ExploreProps {
   onAtualizarPresencaExplore?: (contexto: {
     tipo: ContentType;
@@ -53,12 +75,19 @@ export default function Explore({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [carregandoMais, setCarregandoMais] = useState(false);
+  const [temMaisResultados, setTemMaisResultados] = useState(true);
+  const [falhaCarregamentoMais, setFalhaCarregamentoMais] = useState(false);
   const [source, setSource] = useState<Source>("modrinth");
   const [contentType, setContentType] = useState<ContentType>("modpack");
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
 
   const hasLoaded = useRef(false);
   const lastSearch = useRef({ query: "", contentType: "", source: "" });
+  const fimListaRef = useRef<HTMLDivElement | null>(null);
+  const proximoOffsetRef = useRef(0);
+  const carregandoMaisRef = useRef(false);
+  const geracaoBuscaRef = useRef(0);
 
   useEffect(() => {
     const favIds = new Set<string>();
@@ -68,7 +97,7 @@ export default function Explore({
     setFavorites(favIds);
   }, [results]);
 
-  const searchContent = async (q: string, type: ContentType, src: Source) => {
+  const searchContent = useCallback(async (q: string, type: ContentType, src: Source) => {
     if (
       lastSearch.current.query === q &&
       lastSearch.current.contentType === type &&
@@ -77,66 +106,117 @@ export default function Explore({
       return;
     }
     lastSearch.current = { query: q, contentType: type, source: src };
+    const geracao = geracaoBuscaRef.current + 1;
+    geracaoBuscaRef.current = geracao;
+    proximoOffsetRef.current = 0;
+    carregandoMaisRef.current = false;
 
     setLoading(true);
+    setCarregandoMais(false);
+    setTemMaisResultados(true);
+    setFalhaCarregamentoMais(false);
     try {
       const resultados: any[] = await invoke("search_mods_online", {
         query: q,
         platform: src,
         contentType: type,
+        offset: 0,
+        limit: LIMITE_RESULTADOS_POR_PAGINA,
       });
 
-      setResults(
-        resultados.map((item: any) => ({
-          id: String(item.id || ""),
-          title: String(item.name || item.title || "Sem nome"),
-          description: String(item.description || ""),
-          icon_url: item.iconUrl || item.icon_url || undefined,
-          author: String(item.author || "Desconhecido"),
-          downloads:
-            typeof item.downloadCount === "number"
-              ? item.downloadCount
-              : typeof item.download_count === "number"
-                ? item.download_count
-                : undefined,
-          follows:
-            typeof item.follows === "number"
-              ? item.follows
-              : undefined,
-          project_type: (item.projectType || item.project_type || type) as TipoProjetoConteudo,
-          slug:
-            String(item.slug || "").trim() ||
-            String(item.id || "").trim(),
-        }))
-      );
+      if (geracaoBuscaRef.current !== geracao) return;
+      const resultadosMapeados = resultados.map((item) => mapearResultadoBusca(item, type));
+      setResults(resultadosMapeados);
+      proximoOffsetRef.current = resultados.length;
+      setTemMaisResultados(resultados.length === LIMITE_RESULTADOS_POR_PAGINA);
     } catch (error) {
       console.error("Erro ao buscar:", error);
-      setResults([]);
+      if (geracaoBuscaRef.current === geracao) {
+        setResults([]);
+        setTemMaisResultados(false);
+      }
     } finally {
-      setLoading(false);
+      if (geracaoBuscaRef.current === geracao) setLoading(false);
     }
-  };
+  }, []);
+
+  const carregarMaisResultados = useCallback(async () => {
+    if (loading || !temMaisResultados || carregandoMaisRef.current) return;
+
+    const geracao = geracaoBuscaRef.current;
+    carregandoMaisRef.current = true;
+    setCarregandoMais(true);
+    setFalhaCarregamentoMais(false);
+
+    try {
+      const resultados: any[] = await invoke("search_mods_online", {
+        query,
+        platform: source,
+        contentType,
+        offset: proximoOffsetRef.current,
+        limit: LIMITE_RESULTADOS_POR_PAGINA,
+      });
+
+      if (geracaoBuscaRef.current !== geracao) return;
+      const resultadosMapeados = resultados.map((item) => mapearResultadoBusca(item, contentType));
+      setResults((anteriores) => {
+        const idsExistentes = new Set(anteriores.map((item) => item.id));
+        const novos = resultadosMapeados.filter((item) => !idsExistentes.has(item.id));
+        return [...anteriores, ...novos];
+      });
+      proximoOffsetRef.current += resultados.length;
+      setTemMaisResultados(resultados.length === LIMITE_RESULTADOS_POR_PAGINA);
+    } catch (error) {
+      console.error("Erro ao carregar mais conteúdos:", error);
+      if (geracaoBuscaRef.current === geracao) setFalhaCarregamentoMais(true);
+    } finally {
+      if (geracaoBuscaRef.current === geracao) setCarregandoMais(false);
+      carregandoMaisRef.current = false;
+    }
+  }, [contentType, loading, query, source, temMaisResultados]);
 
   useEffect(() => {
     if (!hasLoaded.current) {
       hasLoaded.current = true;
-      searchContent("", contentType, source);
+      void searchContent("", contentType, source);
     }
-  }, []);
+  }, [contentType, searchContent, source]);
 
   useEffect(() => {
     if (hasLoaded.current) {
-      searchContent(query, contentType, source);
+      void searchContent(query, contentType, source);
     }
-  }, [contentType, source]);
+  }, [contentType, searchContent, source]);
 
   useEffect(() => {
     if (!hasLoaded.current) return;
     const timer = setTimeout(() => {
-      searchContent(query, contentType, source);
+      void searchContent(query, contentType, source);
     }, 400);
     return () => clearTimeout(timer);
-  }, [query]);
+  }, [contentType, query, searchContent, source]);
+
+  useEffect(() => {
+    const fimLista = fimListaRef.current;
+    if (!fimLista || loading || carregandoMais || falhaCarregamentoMais || !temMaisResultados) return;
+
+    const observador = new IntersectionObserver(
+      ([entrada]) => {
+        if (entrada.isIntersecting) void carregarMaisResultados();
+      },
+      { rootMargin: "600px 0px" }
+    );
+
+    observador.observe(fimLista);
+    return () => observador.disconnect();
+  }, [
+    carregandoMais,
+    carregarMaisResultados,
+    falhaCarregamentoMais,
+    loading,
+    results.length,
+    temMaisResultados,
+  ]);
 
   useEffect(() => {
     onAtualizarPresencaExplore?.({
@@ -240,11 +320,12 @@ export default function Explore({
       {loading ? (
         <EsqueletoAba />
       ) : (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-        >
+        <>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+          >
           {results.map((item, index) => (
             <motion.div
               key={item.id}
@@ -343,7 +424,23 @@ export default function Explore({
               </div>
             </motion.div>
           ))}
-        </motion.div>
+          </motion.div>
+
+          <div ref={fimListaRef} className="flex h-12 items-center justify-center" aria-live="polite">
+            {carregandoMais && (
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/10 border-t-emerald-400/70" />
+            )}
+            {falhaCarregamentoMais && (
+              <button
+                type="button"
+                onClick={() => void carregarMaisResultados()}
+                className="text-[10px] font-bold uppercase tracking-wider text-white/35 transition-colors hover:text-emerald-300"
+              >
+                Tentar novamente
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );

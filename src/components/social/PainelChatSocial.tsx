@@ -191,7 +191,7 @@ export function PainelChatSocial({
             </AnimatePresence>
           </header>
 
-          {amigoSelecionado.atividadeAtual && (
+          {amigoSelecionado.atividadeAtual && amigoSelecionado.atividadeAtual.tipo !== 'launcher' && (
             <div className="flex shrink-0 items-center gap-2 border-b border-white/7 px-3 py-2">
               <ImagemAtividade atividade={amigoSelecionado.atividadeAtual} className="h-7 w-7" />
               <div className="min-w-0 flex-1">

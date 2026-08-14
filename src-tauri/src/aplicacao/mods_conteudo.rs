@@ -1074,8 +1074,12 @@ pub(crate) async fn search_mods_online(
     query: String,
     platform: Option<ModPlatform>,
     content_type: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
 ) -> Result<Vec<ModSearchResult>, String> {
     let tipo_conteudo = normalizar_tipo_conteudo(content_type);
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(20).clamp(1, 50);
     let client = reqwest::Client::new();
     let mut results = Vec::new();
     let mut erros = Vec::new();
@@ -1089,7 +1093,9 @@ pub(crate) async fn search_mods_online(
     for platform in platforms_to_search {
         match platform {
             ModPlatform::CurseForge => {
-                match search_curseforge_conteudo(&client, &query, &tipo_conteudo).await {
+                match search_curseforge_conteudo(&client, &query, &tipo_conteudo, offset, limit)
+                    .await
+                {
                     Ok(mut curseforge_results) => results.append(&mut curseforge_results),
                     Err(e) => {
                         eprintln!("Erro ao buscar no CurseForge: {}", e);
@@ -1098,7 +1104,8 @@ pub(crate) async fn search_mods_online(
                 }
             }
             ModPlatform::Modrinth => {
-                match search_modrinth_conteudo(&client, &query, &tipo_conteudo).await {
+                match search_modrinth_conteudo(&client, &query, &tipo_conteudo, offset, limit).await
+                {
                     Ok(mut modrinth_results) => results.append(&mut modrinth_results),
                     Err(e) => {
                         eprintln!("Erro ao buscar no Modrinth: {}", e);
@@ -1131,13 +1138,17 @@ async fn search_curseforge_conteudo(
     client: &reqwest::Client,
     query: &str,
     tipo_conteudo: &str,
+    offset: u32,
+    limit: u32,
 ) -> Result<Vec<ModSearchResult>, String> {
     let class_id = class_id_por_tipo_conteudo(tipo_conteudo);
     let search_url = format!(
-        "{}/mods/search?gameId=432&searchFilter={}&classId={}&pageSize=20&sortField=2&sortOrder=desc",
+        "{}/mods/search?gameId=432&searchFilter={}&classId={}&index={}&pageSize={}&sortField=2&sortOrder=desc",
         CURSEFORGE_API_BASE,
         urlencoding::encode(query),
-        class_id
+        class_id,
+        offset,
+        limit,
     );
 
     let request = anexar_headers_curseforge(client.get(&search_url))?;
@@ -1230,12 +1241,16 @@ async fn search_modrinth_conteudo(
     client: &reqwest::Client,
     query: &str,
     tipo_conteudo: &str,
+    offset: u32,
+    limit: u32,
 ) -> Result<Vec<ModSearchResult>, String> {
     let search_url = format!(
-        "{}/search?query={}&facets=[[\"project_type:{}\"]]&limit=20",
+        "{}/search?query={}&facets=[[\"project_type:{}\"]]&offset={}&limit={}",
         MODRINTH_API_BASE,
         urlencoding::encode(query),
-        tipo_conteudo
+        tipo_conteudo,
+        offset,
+        limit,
     );
 
     let response = client
