@@ -1,0 +1,109 @@
+name: release-launcher
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publicar-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configurar Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Instalar dependencias
+        run: bun install --frozen-lockfile
+
+      - name: Validar versao da tag
+        shell: pwsh
+        run: |
+          $versaoTag = "${{ github.ref_name }}" -replace '^v', ''
+          $versaoPackage = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $versaoTauri = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $versaoCargo = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1).Matches.Groups[1].Value
+
+          $versoes = @($versaoPackage, $versaoTauri, $versaoCargo)
+          if ($versoes | Where-Object { $_ -ne $versaoTag }) {
+            throw "A tag v$versaoTag diverge dos manifestos: package=$versaoPackage, tauri=$versaoTauri, cargo=$versaoCargo."
+          }
+
+      - name: Validar frontend e backend
+        run: bun run verificar
+
+      - name: Obter descricao da release a partir do commit
+        id: mensagem_commit
+        shell: pwsh
+        run: |
+          $mensagem = (git log -1 --pretty=%B).Trim()
+          "corpo<<EOF" >> $env:GITHUB_OUTPUT
+          $mensagem >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
+      - name: Build e publicar release
+        id: publicar_release
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: ./
+          tauriScript: bun run tauri --
+          tagName: ${{ github.ref_name }}
+          releaseName: Dome Launcher ${{ github.ref_name }}
+          releaseBody: ${{ steps.mensagem_commit.outputs.corpo }}
+          releaseDraft: false
+          prerelease: false
+          updaterJsonPreferNsis: true
+
+      - name: Remover assets extras da release
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = context.ref.replace("refs/tags/", "");
+            const release = await github.rest.repos.getReleaseByTag({
+              owner,
+              repo,
+              tag
+            });
+            const assets = await github.paginate(
+              github.rest.repos.listReleaseAssets,
+              {
+                owner,
+                repo,
+                release_id: release.data.id
+              }
+            );
+            const permitido = /^(Dome\.Launcher_.*_x64-setup\.exe|latest\.json)$/;
+            for (const asset of assets) {
+              if (!permitido.test(asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({
+                  owner,
+                  repo,
+                  asset_id: asset.id
+                });
+              }
+            }

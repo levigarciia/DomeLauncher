@@ -1,0 +1,528 @@
+import { useEffect, useState } from 'react';
+import { Check, Download, Mail, Plus, Search, Users, X } from '../../iconesPixelados';
+import { cn } from '../../lib/utils';
+import type {
+    AmigoSocial,
+    PedidoTransferenciaInstancia,
+    PerfilBuscaAmizade,
+    SolicitacaoEnviada,
+    SolicitacaoRecebida,
+    StatusPresenca,
+} from './tiposSocial';
+import { ImagemAtividade } from './ImagemAtividade';
+
+type AbaSocial = 'amigos' | 'pedidos';
+
+interface ListaAmigosAgrupadaProps {
+    sessaoAtiva: boolean;
+    filtroAmigos: string;
+    onAlterarFiltro: (valor: string) => void;
+    onEnviarSolicitacao: () => void;
+    enviandoSolicitacao: boolean;
+    perfilEncontrado: PerfilBuscaAmizade | null;
+    buscandoPerfil: boolean;
+    buscaPerfilConcluida: boolean;
+    pendentesRecebidas: SolicitacaoRecebida[];
+    pendentesEnviadas: SolicitacaoEnviada[];
+    pedidosTransferencia: PedidoTransferenciaInstancia[];
+    onResponderSolicitacao: (requestId: string, acao: 'accept' | 'reject') => void;
+    onResponderTransferencia: (pedidoId: string, aceitar: boolean) => void;
+    solicitacaoProcessandoId: string | null;
+    transferenciaProcessandoId: string | null;
+    mensagemSolicitacao: string | null;
+    mensagemTransferencia: string | null;
+    carregandoAmigos: boolean;
+    erroAmigos: string | null;
+    amigosOnline: AmigoSocial[];
+    amigosOffline: AmigoSocial[];
+    naoLidasPorAmigo: Record<string, number>;
+    amigoSelecionadoPerfilId: string | null;
+    onAbrirChat: (friendProfileId: string) => void;
+    onAbrirAtividade?: (amigo: AmigoSocial) => void;
+    formatarTempoRelativo: (data: string | null | undefined) => string;
+    rotuloStatus: (status?: StatusPresenca) => string;
+}
+
+function classeStatus(status?: StatusPresenca): string {
+    if (status === 'ausente') return 'text-amber-300';
+    if (status === 'offline') return 'text-white/35';
+    return 'text-emerald-300';
+}
+
+function corStatus(status?: StatusPresenca): string {
+    if (status === 'ausente') return 'bg-amber-400';
+    if (status === 'offline') return 'bg-white/25';
+    return 'bg-emerald-400';
+}
+
+function iniciais(nome: string): string {
+    const partes = nome.trim().split(/\s+/).slice(0, 2);
+    return (partes.map((item) => item[0]?.toUpperCase() ?? '').join('') || '?').slice(0, 2);
+}
+
+function mensagemEhErro(mensagem: string): boolean {
+    return /falha|erro|inv[aá]lid|n[aã]o foi|n[aã]o encontrado|uso/i.test(mensagem);
+}
+
+function LinhaAmigo({
+    amigo,
+    selecionado,
+    naoLidas,
+    onAbrirChat,
+    formatarTempoRelativo,
+    rotuloStatus,
+}: {
+    amigo: AmigoSocial;
+    selecionado: boolean;
+    naoLidas: number;
+    onAbrirChat: (friendProfileId: string) => void;
+    formatarTempoRelativo: (data: string | null | undefined) => string;
+    rotuloStatus: (status?: StatusPresenca) => string;
+}) {
+    return (
+        <button
+            type="button"
+            onClick={() => onAbrirChat(amigo.friendProfileId)}
+            className={cn(
+                'flex w-full items-center gap-3 border px-2.5 py-2 text-left transition-colors',
+                selecionado
+                    ? 'border-emerald-400/25 bg-emerald-400/[0.05]'
+                    : 'border-white/[0.07] bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]'
+            )}
+        >
+            <div className="relative h-8 w-8 shrink-0">
+                {amigo.avatarUrl ? (
+                    <img
+                        src={amigo.avatarUrl}
+                        alt={amigo.nome}
+                        className="h-full w-full object-contain"
+                        onError={(evento) => {
+                            evento.currentTarget.style.display = 'none';
+                        }}
+                    />
+                ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[9px] font-black text-white/55">
+                        {iniciais(amigo.nome)}
+                    </div>
+                )}
+                <span className={cn('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[#151515]', corStatus(amigo.status))} />
+            </div>
+            <div className="min-w-0 flex-1">
+                <p className="truncate text-[12px] font-semibold text-white/85">{amigo.nome}</p>
+                <p className={cn('truncate text-[9px]', classeStatus(amigo.status))}>
+                    {amigo.status === 'offline'
+                        ? `Visto ${formatarTempoRelativo(amigo.ultimoSeenEm)}`
+                        : `${rotuloStatus(amigo.status)}${amigo.handle ? ` · @${amigo.handle}` : ''}`}
+                </p>
+                {amigo.atividadeAtual?.modpackNome && (
+                    <p className="mt-0.5 truncate text-[9px] text-white/35">{amigo.atividadeAtual.modpackNome}</p>
+                )}
+            </div>
+            {naoLidas > 0 && (
+                <span className="inline-flex min-w-4 items-center justify-center bg-emerald-400 px-1 text-[9px] font-black leading-4 text-[#07120d]">
+                    {naoLidas > 99 ? '99+' : naoLidas}
+                </span>
+            )}
+        </button>
+    );
+}
+
+function LinhaAmigoJogando({
+    amigo,
+    selecionado,
+    naoLidas,
+    onAbrirAtividade,
+    onAbrirChat,
+}: {
+    amigo: AmigoSocial;
+    selecionado: boolean;
+    naoLidas: number;
+    onAbrirAtividade?: (amigo: AmigoSocial) => void;
+    onAbrirChat: (friendProfileId: string) => void;
+}) {
+    const atividade = amigo.atividadeAtual;
+    const podeAbrirAtividade = Boolean(atividade && atividade.tipo !== 'launcher' && onAbrirAtividade);
+    const abrirChat = () => onAbrirChat(amigo.friendProfileId);
+    const abrirAtividade = () => {
+        if (podeAbrirAtividade && onAbrirAtividade) {
+            onAbrirAtividade(amigo);
+            return;
+        }
+
+        abrirChat();
+    };
+
+    return (
+        <article
+            className={cn(
+                'grid w-full grid-cols-[1.75rem_2.5rem_minmax(0,1fr)_auto] items-center gap-2 border px-2 py-2',
+                'text-left transition-colors',
+                selecionado
+                    ? 'border-emerald-400/20 bg-emerald-400/[0.045]'
+                    : 'border-transparent hover:border-white/[0.07] hover:bg-white/[0.03]'
+            )}
+        >
+            <button
+                type="button"
+                onClick={abrirChat}
+                aria-label={`Abrir conversa com ${amigo.nome}`}
+                title={`Conversar com ${amigo.nome}`}
+                className="relative h-7 w-7 shrink-0 transition-opacity hover:opacity-80"
+            >
+                {amigo.avatarUrl ? (
+                    <img
+                        src={amigo.avatarUrl}
+                        alt={amigo.nome}
+                        className="h-full w-full object-contain"
+                        onError={(evento) => {
+                            evento.currentTarget.style.display = 'none';
+                        }}
+                    />
+                ) : (
+                    <span className="grid h-full w-full place-items-center text-[8px] font-black text-white/50">
+                        {iniciais(amigo.nome)}
+                    </span>
+                )}
+                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[#151515] bg-emerald-400" />
+            </button>
+
+            <button
+                type="button"
+                onClick={abrirAtividade}
+                aria-label={podeAbrirAtividade ? `Abrir ${atividade?.modpackNome}` : `Abrir conversa com ${amigo.nome}`}
+                title={podeAbrirAtividade ? 'Ver instância' : `Conversar com ${amigo.nome}`}
+                className="h-10 w-10 transition-transform hover:scale-[1.04]"
+            >
+                {atividade && <ImagemAtividade atividade={atividade} className="h-full w-full" />}
+            </button>
+
+            <div className="min-w-0 flex-1">
+                <button
+                    type="button"
+                    onClick={abrirChat}
+                    className="block max-w-full truncate text-[11px] font-bold text-white/80 hover:text-white"
+                >
+                    {amigo.nome}
+                </button>
+                <button
+                    type="button"
+                    onClick={abrirAtividade}
+                    className={cn(
+                        'mt-0.5 block max-w-full truncate text-[10px] font-semibold text-emerald-300/80',
+                        podeAbrirAtividade && 'hover:text-emerald-200 hover:underline'
+                    )}
+                >
+                    {atividade?.modpackNome || atividade?.instanciaNome || 'Minecraft'}
+                </button>
+                {atividade?.versaoMinecraft && (
+                    <p className="mt-0.5 truncate text-[8px] uppercase tracking-wide text-white/25">
+                        Minecraft {atividade.versaoMinecraft}
+                        {atividade.loader ? ` · ${atividade.loader}` : ''}
+                    </p>
+                )}
+            </div>
+            {naoLidas > 0 && (
+                <button
+                    type="button"
+                    onClick={abrirChat}
+                    aria-label={`${naoLidas} mensagens não lidas de ${amigo.nome}`}
+                    className="inline-flex min-w-4 items-center justify-center bg-emerald-400 px-1 text-[9px] font-black leading-4 text-[#07120d]"
+                >
+                    {naoLidas > 99 ? '99+' : naoLidas}
+                </button>
+            )}
+        </article>
+    );
+}
+
+export function ListaAmigosAgrupada({
+    sessaoAtiva,
+    filtroAmigos,
+    onAlterarFiltro,
+    onEnviarSolicitacao,
+    enviandoSolicitacao,
+    perfilEncontrado,
+    buscandoPerfil,
+    buscaPerfilConcluida,
+    pendentesRecebidas,
+    pendentesEnviadas,
+    pedidosTransferencia,
+    onResponderSolicitacao,
+    onResponderTransferencia,
+    solicitacaoProcessandoId,
+    transferenciaProcessandoId,
+    mensagemSolicitacao,
+    mensagemTransferencia,
+    carregandoAmigos,
+    erroAmigos,
+    amigosOnline,
+    amigosOffline,
+    naoLidasPorAmigo,
+    amigoSelecionadoPerfilId,
+    onAbrirChat,
+    onAbrirAtividade,
+    formatarTempoRelativo,
+    rotuloStatus,
+}: ListaAmigosAgrupadaProps) {
+    const [abaAtiva, setAbaAtiva] = useState<AbaSocial>('amigos');
+    const totalAmigos = amigosOnline.length + amigosOffline.length;
+    const amigosJogando = amigosOnline.filter(
+        (amigo) => amigo.atividadeAtual && amigo.atividadeAtual.tipo !== 'launcher'
+    );
+    const amigosDisponiveis = amigosOnline.filter(
+        (amigo) => !amigo.atividadeAtual || amigo.atividadeAtual.tipo === 'launcher'
+    );
+    const solicitacaoJaEnviada = perfilEncontrado
+        ? pendentesEnviadas.some((pendente) => pendente.paraPerfilId === perfilEncontrado.perfilId)
+        : false;
+
+    const totalPedidos = pendentesRecebidas.length + pedidosTransferencia.length;
+    const amigos = [...amigosOnline, ...amigosOffline];
+
+    useEffect(() => {
+        if (totalPedidos > 0) setAbaAtiva('pedidos');
+    }, [totalPedidos]);
+
+    return (
+        <section className="overflow-hidden border border-white/10 bg-[#151515]">
+            <div className="grid grid-cols-2 border-b border-white/[0.07] p-1">
+                <button
+                    type="button"
+                    onClick={() => setAbaAtiva('amigos')}
+                    className={cn(
+                        'flex items-center justify-center gap-2 border px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em]',
+                        abaAtiva === 'amigos' ? 'border-white/12 bg-white/[0.05] text-white/85' : 'border-transparent text-white/35 hover:text-white/60'
+                    )}
+                >
+                    <Users size={11} /> Amigos <span className="text-[9px] opacity-50">{totalAmigos}</span>
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setAbaAtiva('pedidos')}
+                    className={cn(
+                        'flex items-center justify-center gap-2 border px-2 py-2 text-[10px] font-black uppercase tracking-[0.12em]',
+                        abaAtiva === 'pedidos' ? 'border-white/12 bg-white/[0.05] text-white/85' : 'border-transparent text-white/35 hover:text-white/60'
+                    )}
+                >
+                    <Mail size={11} /> Pedidos
+                    {totalPedidos > 0 && (
+                        <span className="inline-flex min-w-4 items-center justify-center bg-emerald-400 px-1 text-[9px] leading-4 text-[#07120d]">{totalPedidos}</span>
+                    )}
+                </button>
+            </div>
+
+            {!sessaoAtiva && <p className="px-4 py-6 text-center text-[10px] text-white/35">Entre com o Discord para usar o social.</p>}
+
+            {sessaoAtiva && abaAtiva === 'amigos' && (
+                <div className="space-y-3 p-3">
+                    <div className="relative">
+                        <Search size={11} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                        <input
+                            value={filtroAmigos}
+                            onChange={(evento) => onAlterarFiltro(evento.target.value)}
+                            placeholder="Nome ou @handle"
+                            className="h-9 w-full border border-white/10 bg-[#101010] pl-8 pr-3 text-[10px] text-white outline-none placeholder:text-white/25 focus:border-white/25"
+                        />
+                    </div>
+
+                    {buscandoPerfil && <p className="text-center text-[9px] text-white/25">Buscando perfil...</p>}
+
+                    {!buscandoPerfil && perfilEncontrado && (
+                        <div className="flex items-center gap-2.5 border border-white/10 bg-white/[0.025] p-2.5">
+                            {perfilEncontrado.avatarUrl ? (
+                                <img
+                                    src={perfilEncontrado.avatarUrl}
+                                    alt={perfilEncontrado.nome}
+                                    className="h-8 w-8 shrink-0 object-contain"
+                                />
+                            ) : (
+                                <div className="grid h-8 w-8 shrink-0 place-items-center text-[9px] font-black text-white/55">
+                                    {iniciais(perfilEncontrado.nome)}
+                                </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                                <p className="truncate text-[11px] font-semibold text-white/80">{perfilEncontrado.nome}</p>
+                                <p className="truncate text-[9px] text-white/35">@{perfilEncontrado.handle}</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={onEnviarSolicitacao}
+                                disabled={enviandoSolicitacao || solicitacaoJaEnviada}
+                                className="flex items-center gap-1 border border-emerald-400/25 bg-emerald-400/[0.07] px-2 py-1.5 text-[9px] font-bold uppercase tracking-wider text-emerald-200 disabled:border-white/10 disabled:bg-transparent disabled:text-white/25"
+                            >
+                                <Plus size={9} /> {solicitacaoJaEnviada ? 'Enviado' : enviandoSolicitacao ? 'Enviando' : 'Adicionar'}
+                            </button>
+                        </div>
+                    )}
+
+                    {!buscandoPerfil && buscaPerfilConcluida && !perfilEncontrado && totalAmigos === 0 && (
+                        <p className="text-center text-[9px] text-white/25">Nenhum usuário encontrado.</p>
+                    )}
+
+                    {mensagemSolicitacao && (
+                        <p className={cn('text-[9px]', mensagemEhErro(mensagemSolicitacao) ? 'text-red-300/70' : 'text-emerald-300/70')}>
+                            {mensagemSolicitacao}
+                        </p>
+                    )}
+
+                    {carregandoAmigos && totalAmigos === 0 && <p className="py-3 text-center text-[10px] text-white/30">Carregando...</p>}
+                    {!carregandoAmigos && erroAmigos && <p className="py-2 text-center text-[10px] text-red-300/70">{erroAmigos}</p>}
+                    {!carregandoAmigos && !erroAmigos && totalAmigos === 0 && !perfilEncontrado && !buscandoPerfil && !filtroAmigos.trim() && (
+                        <p className="py-3 text-center text-[10px] text-white/30">Nenhum amigo.</p>
+                    )}
+
+                    {!erroAmigos && totalAmigos > 0 && (
+                        <div className="space-y-3">
+                            {amigosJogando.length > 0 && (
+                                <div className="space-y-1 border-b border-emerald-400/15 pb-3">
+                                    <p className="px-1 text-[8px] font-black uppercase tracking-[0.16em] text-emerald-300/65">
+                                        Em jogo
+                                    </p>
+                                    {amigosJogando.map((amigo) => (
+                                        <LinhaAmigoJogando
+                                            key={amigo.friendProfileId}
+                                            amigo={amigo}
+                                            selecionado={amigoSelecionadoPerfilId === amigo.friendProfileId}
+                                            naoLidas={naoLidasPorAmigo[amigo.friendProfileId] ?? 0}
+                                            onAbrirAtividade={onAbrirAtividade}
+                                            onAbrirChat={onAbrirChat}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                            {amigosDisponiveis.length > 0 && (
+                                <div className="space-y-1.5">
+                                    {amigosJogando.length > 0 && (
+                                        <p className="px-1 text-[8px] font-black uppercase tracking-[0.16em] text-white/25">
+                                            Online
+                                        </p>
+                                    )}
+                                    {amigosDisponiveis.map((amigo) => (
+                                        <LinhaAmigo
+                                            key={amigo.friendProfileId}
+                                            amigo={amigo}
+                                            selecionado={amigoSelecionadoPerfilId === amigo.friendProfileId}
+                                            naoLidas={naoLidasPorAmigo[amigo.friendProfileId] ?? 0}
+                                            onAbrirChat={onAbrirChat}
+                                            formatarTempoRelativo={formatarTempoRelativo}
+                                            rotuloStatus={rotuloStatus}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                            {amigosOffline.length > 0 && (
+                                <div className="space-y-1.5 border-t border-white/[0.06] pt-3">
+                                    <p className="text-[8px] font-black uppercase tracking-[0.16em] text-white/25">Offline</p>
+                                    {amigosOffline.map((amigo) => (
+                                        <LinhaAmigo
+                                            key={amigo.friendProfileId}
+                                            amigo={amigo}
+                                            selecionado={amigoSelecionadoPerfilId === amigo.friendProfileId}
+                                            naoLidas={naoLidasPorAmigo[amigo.friendProfileId] ?? 0}
+                                            onAbrirChat={onAbrirChat}
+                                            formatarTempoRelativo={formatarTempoRelativo}
+                                            rotuloStatus={rotuloStatus}
+                                        />
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {sessaoAtiva && abaAtiva === 'pedidos' && (
+                <div className="space-y-2 p-3">
+                    {totalPedidos === 0 ? (
+                        <p className="py-2 text-center text-[9px] text-white/25">Nenhum pedido.</p>
+                    ) : pendentesRecebidas.map((pendente) => {
+                        const processando = solicitacaoProcessandoId === pendente.id;
+                        return (
+                            <article key={pendente.id} className="border border-white/[0.08] p-2.5">
+                                <p className="truncate text-[11px] font-semibold text-white/75">{pendente.deNome}</p>
+                                <p className="truncate text-[9px] text-white/30">{pendente.deHandle ? `@${pendente.deHandle}` : ''} · {formatarTempoRelativo(pendente.criadoEm)}</p>
+                                <div className="mt-2 grid grid-cols-2 gap-1.5">
+                                    <button type="button" onClick={() => onResponderSolicitacao(pendente.id, 'reject')} disabled={processando} className="flex items-center justify-center gap-1 border border-white/10 py-1.5 text-[8px] uppercase tracking-wider text-white/35 hover:text-red-200 disabled:opacity-30">
+                                        <X size={9} /> Recusar
+                                    </button>
+                                    <button type="button" onClick={() => onResponderSolicitacao(pendente.id, 'accept')} disabled={processando} className="flex items-center justify-center gap-1 border border-emerald-400/20 bg-emerald-400/[0.06] py-1.5 text-[8px] uppercase tracking-wider text-emerald-200 disabled:opacity-30">
+                                        <Check size={9} /> Aceitar
+                                    </button>
+                                </div>
+                            </article>
+                        );
+                    })}
+
+                    {pedidosTransferencia.map((pedido) => {
+                        const amigo = amigos.find(
+                            (item) => item.friendProfileId === pedido.solicitantePerfilId
+                        );
+                        const processando = transferenciaProcessandoId === pedido.id;
+
+                        return (
+                            <article
+                                key={pedido.id}
+                                className="border border-emerald-400/15 bg-emerald-400/[0.025] p-2.5"
+                            >
+                                <div className="flex items-start gap-2.5">
+                                    <div className="grid h-8 w-8 shrink-0 place-items-center">
+                                        {amigo?.avatarUrl ? (
+                                            <img
+                                                src={amigo.avatarUrl}
+                                                alt={amigo.nome}
+                                                className="h-full w-full object-contain"
+                                            />
+                                        ) : (
+                                            <Download size={14} className="text-emerald-300/70" />
+                                        )}
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                        <p className="truncate text-[11px] font-semibold text-white/80">
+                                            {amigo?.nome ?? 'Amigo'}
+                                        </p>
+                                        <p className="mt-0.5 text-[8px] font-black uppercase tracking-[0.12em] text-emerald-300/55">
+                                            Transferência de instância
+                                        </p>
+                                        <p className="mt-1 truncate text-[10px] text-white/45">
+                                            {pedido.instanciaNome || pedido.instanciaId || 'Instância personalizada'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="mt-2 grid grid-cols-2 gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => onResponderTransferencia(pedido.id, false)}
+                                        disabled={processando}
+                                        className="flex items-center justify-center gap-1 border border-white/10 py-1.5 text-[8px] uppercase tracking-wider text-white/35 hover:text-red-200 disabled:opacity-30"
+                                    >
+                                        <X size={9} /> Recusar
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => onResponderTransferencia(pedido.id, true)}
+                                        disabled={processando}
+                                        className="flex items-center justify-center gap-1 border border-emerald-400/20 bg-emerald-400/[0.06] py-1.5 text-[8px] uppercase tracking-wider text-emerald-200 disabled:opacity-30"
+                                    >
+                                        <Check size={9} /> Aceitar
+                                    </button>
+                                </div>
+                            </article>
+                        );
+                    })}
+
+                    {mensagemTransferencia && (
+                        <p className={cn(
+                            'text-[9px]',
+                            mensagemEhErro(mensagemTransferencia)
+                                ? 'text-red-300/70'
+                                : 'text-emerald-300/70'
+                        )}>
+                            {mensagemTransferencia}
+                        </p>
+                    )}
+                </div>
+            )}
+
+        </section>
+    );
+}
