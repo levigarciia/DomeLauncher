@@ -7,6 +7,11 @@ import {
   EVENTO_SOLICITAR_TRANSFERENCIA_SOCIAL,
   publicarProgressoTransferenciaSocial,
 } from '../lib/eventosTransferenciaSocial';
+import {
+  addCreatingInstance,
+  errorCreatingInstance,
+  removeCreatingInstance,
+} from '../stores/creatingInstances';
 import { cn } from '../lib/utils';
 import { EsqueletoSocial } from './EsqueletoCarregamento';
 import { ListaAmigosAgrupada } from './social/ListaAmigosAgrupada';
@@ -176,6 +181,9 @@ interface EventoSocketSyncStatus {
   status?: string;
   tokenUpload?: string;
   tokenDownload?: string;
+  // Propagados pela API para evitar busca no estado local
+  instanciaId?: string | null;
+  instanciaNome?: string | null;
 }
 
 interface AtividadeLocalLauncher {
@@ -739,11 +747,16 @@ export default function SocialSidebar({
     const token = await obterTokenValido();
     if (!token) return;
 
-    const pedido = pedidosSyncRecebidosRef.current.get(pedidoId);
-    const instanciaId = pedido?.instanciaId?.trim();
+    // Usa instanciaId direto do evento (propagado pela API) para não depender do estado local
+    const instanciaId = evento.instanciaId?.trim()
+      ?? pedidosSyncRecebidosRef.current.get(pedidoId)?.instanciaId?.trim();
+
     if (!instanciaId) {
+      const mensagem = 'Não foi possível identificar a instância solicitada.';
       setMensagemSync('Sync sem instanciaId para upload.');
-      setMensagemTransferencia('Não foi possível identificar a instância solicitada.');
+      setMensagemTransferencia(mensagem);
+      // Avisa o solicitante para sair do estado "preparando..."
+      socketRef.current?.emit('social:sync:falha', { pedidoId, mensagem });
       return;
     }
 
@@ -768,6 +781,8 @@ export default function SocialSidebar({
       const mensagem = mensagemErro(erro, 'Falha ao enviar a instância.');
       setMensagemSync(mensagem);
       setMensagemTransferencia(mensagem);
+      // Notifica o solicitante que a transferência falhou
+      socketRef.current?.emit('social:sync:falha', { pedidoId, mensagem });
     }
   }, [obterTokenValido]);
 
@@ -779,6 +794,10 @@ export default function SocialSidebar({
     const friendProfileId = pedidosSyncEnviadosRef.current.get(pedidoId);
     if (!friendProfileId) return;
 
+    // ID temporário para rastrear na biblioteca
+    const idBiblioteca = `social-sync-${pedidoId}`;
+    const nomeInstancia = evento.instanciaNome?.trim() || 'Instância social';
+
     setProcessandoAtividade(true);
     setMensagemSync('Baixando e preparando a instância...');
     publicarProgressoTransferenciaSocial({
@@ -786,6 +805,18 @@ export default function SocialSidebar({
       mensagem: 'Baixando e preparando a instância...',
       friendProfileId,
       pedidoId,
+    });
+
+    // Registra na biblioteca como "carregando" — igual ao comportamento de import normal
+    addCreatingInstance({
+      id: idBiblioteca,
+      name: nomeInstancia,
+      version: '',
+      type: 'social',
+      status: 'downloading',
+      progress: 0,
+      message: 'Recebendo do seu amigo...',
+      icon: '',
     });
 
     try {
@@ -797,6 +828,7 @@ export default function SocialSidebar({
           tokenDownload,
         }
       );
+      removeCreatingInstance(idBiblioteca);
       setMensagemSync('Instância adicionada à biblioteca.');
       publicarProgressoTransferenciaSocial({
         estado: 'concluido',
@@ -812,6 +844,9 @@ export default function SocialSidebar({
     } catch (erro) {
       const mensagem = mensagemErro(erro, 'Falha ao baixar ou importar a instância.');
       setMensagemSync(mensagem);
+      errorCreatingInstance(idBiblioteca, mensagem);
+      // Remove o card de erro da biblioteca após 6s
+      setTimeout(() => removeCreatingInstance(idBiblioteca), 6_000);
       publicarProgressoTransferenciaSocial({
         estado: 'erro',
         mensagem,
@@ -915,6 +950,18 @@ export default function SocialSidebar({
       if (evento.status === 'pronto_download' && evento.tokenDownload) {
         await fluxoDownloadSync(evento);
       }
+    });
+
+    // Listener para quando o amigo falhar no upload — tira o solicitante do estado "preparando..."
+    socket.on('social:sync:falha', (evento: { pedidoId?: string; mensagem?: string }) => {
+      const pedidoId = evento.pedidoId?.trim();
+      const friendProfileId = pedidoId ? pedidosSyncEnviadosRef.current.get(pedidoId) : null;
+      if (!pedidoId || !friendProfileId) return;
+
+      const mensagem = evento.mensagem?.trim() || 'Falha ao transferir instância.';
+      setMensagemSync(mensagem);
+      publicarProgressoTransferenciaSocial({ estado: 'erro', mensagem, friendProfileId, pedidoId });
+      pedidosSyncEnviadosRef.current.delete(pedidoId);
     });
 
     socketRef.current = socket;

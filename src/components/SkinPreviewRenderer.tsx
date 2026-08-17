@@ -3,6 +3,8 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Loader2 } from "../iconesPixelados";
+import modeloClassicoUrl from "../assets/models/classic-player.gltf?url";
+import modeloSlimUrl from "../assets/models/slim-player.gltf?url";
 
 // Utility functions for cape texture handling
 function createTransparentTexture(): THREE.Texture {
@@ -172,9 +174,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
       return url;
     });
     const loader = new GLTFLoader(gerenciadorCarregamento);
-    const nomeModelo =
-      model === "slim" ? "slim-player.gltf" : "classic-player.gltf";
-    const modelPath = `${import.meta.env.BASE_URL}models/${nomeModelo}`;
+    const modelPath = model === "slim" ? modeloSlimUrl : modeloClassicoUrl;
 
     loader.load(
       modelPath,

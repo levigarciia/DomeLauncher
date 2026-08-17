@@ -30,6 +30,9 @@ pub fn run() {
             crate::discord_social::login_discord_social,
             crate::skin::upload_skin, // Upload de skin
             crate::skin::obter_variante_skin_atual,
+            crate::skin::obter_cosmeticos_skin,
+            crate::skin::baixar_skin_atual,
+            crate::skin::equipar_capa,
             // Gerenciador de mods
             super::mods_conteudo::search_mods_online,
             super::mods_conteudo::buscar_detalhes_projeto_curseforge,

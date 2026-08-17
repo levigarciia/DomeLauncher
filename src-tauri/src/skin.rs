@@ -7,6 +7,8 @@ use tauri::command;
 struct PerfilSkinMinecraft {
     #[serde(default)]
     skins: Vec<SkinMinecraft>,
+    #[serde(default)]
+    capes: Vec<CapaMinecraft>,
 }
 
 #[derive(serde::Deserialize)]
@@ -15,6 +17,36 @@ struct SkinMinecraft {
     state: String,
     #[serde(default)]
     variant: String,
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapaMinecraft {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    alias: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CosmeticosSkin {
+    variant: String,
+    skin_url: Option<String>,
+    capes: Vec<CapaMinecraft>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkinAtualBaixada {
+    variant: String,
+    bytes: Vec<u8>,
 }
 
 fn variante_skin_do_perfil(perfil: &PerfilSkinMinecraft) -> String {
@@ -30,27 +62,119 @@ fn variante_skin_do_perfil(perfil: &PerfilSkinMinecraft) -> String {
     }
 }
 
-#[command]
-pub async fn obter_variante_skin_atual(access_token: String) -> Result<String, String> {
+fn skin_ativa(perfil: &PerfilSkinMinecraft) -> Option<&SkinMinecraft> {
+    perfil
+        .skins
+        .iter()
+        .find(|skin| skin.state.eq_ignore_ascii_case("active"))
+        .or_else(|| perfil.skins.first())
+}
+
+async fn consultar_perfil(access_token: &str) -> Result<PerfilSkinMinecraft, String> {
     let resposta = Client::new()
         .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(access_token)
         .send()
         .await
-        .map_err(|e| format!("Falha ao consultar skin atual: {}", e))?;
+        .map_err(|e| format!("Falha ao consultar perfil do Minecraft: {}", e))?;
 
     if !resposta.status().is_success() {
         return Err(format!(
-            "Não foi possível consultar a skin atual ({})",
+            "Não foi possível consultar o perfil do Minecraft ({})",
             resposta.status()
         ));
     }
 
-    let perfil = resposta
+    resposta
         .json::<PerfilSkinMinecraft>()
         .await
-        .map_err(|e| format!("Resposta de skin inválida: {}", e))?;
+        .map_err(|e| format!("Resposta de perfil inválida: {}", e))
+}
+
+#[command]
+pub async fn obter_variante_skin_atual(access_token: String) -> Result<String, String> {
+    let perfil = consultar_perfil(&access_token).await?;
     Ok(variante_skin_do_perfil(&perfil))
+}
+
+#[command]
+pub async fn obter_cosmeticos_skin(access_token: String) -> Result<CosmeticosSkin, String> {
+    let perfil = consultar_perfil(&access_token).await?;
+    Ok(CosmeticosSkin {
+        variant: variante_skin_do_perfil(&perfil),
+        skin_url: skin_ativa(&perfil)
+            .map(|skin| skin.url.trim().to_string())
+            .filter(|url| !url.is_empty()),
+        capes: perfil.capes,
+    })
+}
+
+#[command]
+pub async fn baixar_skin_atual(access_token: String) -> Result<SkinAtualBaixada, String> {
+    let perfil = consultar_perfil(&access_token).await?;
+    let skin =
+        skin_ativa(&perfil).ok_or_else(|| "O perfil não possui uma skin ativa.".to_string())?;
+    if skin.url.trim().is_empty() {
+        return Err("A skin ativa não possui uma textura válida.".to_string());
+    }
+
+    let resposta = Client::new()
+        .get(&skin.url)
+        .send()
+        .await
+        .map_err(|e| format!("Falha ao baixar a skin atual: {}", e))?;
+    if !resposta.status().is_success() {
+        return Err(format!(
+            "Não foi possível baixar a skin atual ({})",
+            resposta.status()
+        ));
+    }
+
+    let bytes = resposta
+        .bytes()
+        .await
+        .map_err(|e| format!("Falha ao ler a skin atual: {}", e))?;
+    if bytes.len() > 1_048_576 {
+        return Err("A textura da skin ultrapassa o limite de 1 MB.".to_string());
+    }
+
+    Ok(SkinAtualBaixada {
+        variant: variante_skin_do_perfil(&perfil),
+        bytes: bytes.to_vec(),
+    })
+}
+
+#[command]
+pub async fn equipar_capa(access_token: String, cape_id: Option<String>) -> Result<(), String> {
+    let client = Client::new();
+    let requisicao = if let Some(id) = cape_id {
+        if id.is_empty()
+            || id.len() > 100
+            || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err("Identificador de capa inválido.".to_string());
+        }
+        client
+            .put("https://api.minecraftservices.com/minecraft/profile/capes/active")
+            .bearer_auth(&access_token)
+            .json(&serde_json::json!({ "capeId": id }))
+    } else {
+        client
+            .delete("https://api.minecraftservices.com/minecraft/profile/capes/active")
+            .bearer_auth(&access_token)
+    };
+
+    let resposta = requisicao
+        .send()
+        .await
+        .map_err(|e| format!("Falha ao atualizar a capa: {}", e))?;
+    if !resposta.status().is_success() {
+        let status = resposta.status();
+        let texto = resposta.text().await.unwrap_or_default();
+        return Err(format!("Erro Mojang API ({}): {}", status, texto));
+    }
+
+    Ok(())
 }
 
 #[command]
@@ -100,12 +224,15 @@ mod testes {
                 SkinMinecraft {
                     state: "INACTIVE".to_string(),
                     variant: "CLASSIC".to_string(),
+                    url: String::new(),
                 },
                 SkinMinecraft {
                     state: "ACTIVE".to_string(),
                     variant: "SLIM".to_string(),
+                    url: String::new(),
                 },
             ],
+            capes: Vec::new(),
         };
 
         assert_eq!(variante_skin_do_perfil(&perfil), "slim");

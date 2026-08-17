@@ -18,6 +18,7 @@ pub(crate) struct LoaderVersionsResponse {
     pub versions: Vec<LoaderVersionInfo>,
 }
 
+
 /// Busca versões disponíveis dos loaders (Fabric, Forge, NeoForge)
 #[tauri::command]
 pub(crate) async fn get_loader_versions(
@@ -228,7 +229,16 @@ pub(super) async fn install_forge_loader(
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
     std::fs::write(&installer_path, bytes).map_err(|e| e.to_string())?;
 
-    // Executar installer. Para launcher cliente, tentamos installClient primeiro.
+    // Criar launcher_profiles.json se necessário (o instalador do Forge exige para --installClient)
+    let launcher_profiles = instance_path.join("launcher_profiles.json");
+    if !launcher_profiles.exists() {
+        let _ = std::fs::write(&launcher_profiles, "{\"profiles\":{}}");
+    }
+
+    let instance_str = instance_path
+        .to_str()
+        .ok_or_else(|| "Caminho da instância inválido.".to_string())?;
+
     let instalador_str = installer_path
         .to_str()
         .ok_or_else(|| "Caminho do instalador Forge inválido.".to_string())?;
@@ -239,7 +249,7 @@ pub(super) async fn install_forge_loader(
         #[cfg(target_os = "windows")]
         comando_instalador.creation_flags(CREATE_NO_WINDOW);
         let output = comando_instalador
-            .args(["-jar", instalador_str, modo])
+            .args(["-jar", instalador_str, modo, instance_str])
             .current_dir(instance_path)
             .output()
             .map_err(|e| format!("Erro ao executar instalador Forge: {}", e))?;
@@ -843,54 +853,215 @@ pub(super) async fn download_instance_files(
 pub(super) async fn adjust_forge_manifest(
     details: &mut VersionDetail,
     forge_version: &str,
+    instance_path: &std::path::Path,
 ) -> Result<(), String> {
-    // Para Forge, precisamos baixar o manifesto específico do Forge
     let versao_forge = versao_forge_completa(&details.id, forge_version);
-    let build_forge = extrair_build_forge(&details.id, forge_version);
-    let client = reqwest::Client::new();
-    let forge_manifest_url = format!(
-        "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}.json",
-        versao_forge, versao_forge
-    );
+    let forge_manifest_local = instance_path.join("forge_manifest.json");
 
-    let response = client
-        .get(&forge_manifest_url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut forge_json_opt: Option<serde_json::Value> = None;
 
-    if response.status().is_success() {
-        let forge_details: VersionDetail = response.json().await.map_err(|e| e.to_string())?;
-        *details = forge_details;
-    } else {
-        // Fallback para Forge legado (ex.: 1.12.2), onde o .json do Maven pode não existir.
-        details.main_class = "net.minecraft.launchwrapper.Launch".to_string();
+    // 1. Tentar ler forge_manifest.json salvo localmente na instância
+    if forge_manifest_local.exists() {
+        if let Ok(conteudo) = std::fs::read_to_string(&forge_manifest_local) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&conteudo) {
+                forge_json_opt = Some(parsed);
+            }
+        }
+    }
 
-        // Adicionar argumentos específicos do Forge.
-        if let Some(args) = &mut details.arguments {
-            if let Some(game_args) = args.get_mut("game") {
-                if let Some(arr) = game_args.as_array_mut() {
-                    arr.push(serde_json::json!("--tweakClass"));
-                    arr.push(serde_json::json!(
-                        "net.minecraftforge.fml.common.launcher.FMLTweaker"
-                    ));
-                    arr.push(serde_json::json!("--fml.forgeVersion"));
-                    arr.push(serde_json::json!(build_forge));
+    // 2. Se não encontrou localmente, buscar do Maven (.json) ou do Installer JAR (version.json)
+    if forge_json_opt.is_none() {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("DomeLauncher/1.0 (+https://domestudios.com.br)")
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        // 2.1 Tentar Maven .json standalone (Forge legado ≤ 1.12.2)
+        let forge_manifest_url = format!(
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}.json",
+            versao_forge, versao_forge
+        );
+
+        if let Ok(resposta) = client.get(&forge_manifest_url).send().await {
+            if resposta.status().is_success() {
+                if let Ok(parsed) = resposta.json::<serde_json::Value>().await {
+                    let _ = std::fs::write(&forge_manifest_local, serde_json::to_string_pretty(&parsed).unwrap_or_default());
+                    forge_json_opt = Some(parsed);
                 }
             }
-        } else if let Some(legacy) = &mut details.minecraft_arguments {
-            if !legacy.contains("--tweakClass") {
-                legacy.push_str(" --tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker");
-            }
-            if !legacy.contains("--fml.forgeVersion") {
-                legacy.push_str(&format!(" --fml.forgeVersion {}", build_forge));
-            }
-        } else {
-            details.minecraft_arguments = Some(format!(
-                "--tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker --fml.forgeVersion {}",
-                build_forge
-            ));
         }
+
+        // 2.2 Tentar extrair version.json de dentro do installer JAR (Forge moderno 1.13+)
+        if forge_json_opt.is_none() {
+            println!("[Forge] Buscando manifesto dentro do instalador Forge {}...", versao_forge);
+            let installer_url = format!(
+                "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}-installer.jar",
+                versao_forge, versao_forge
+            );
+
+            if let Ok(resposta) = client.get(&installer_url).send().await {
+                if resposta.status().is_success() {
+                    if let Ok(bytes) = resposta.bytes().await {
+                        if let Ok(mut arquivo_zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
+                            if let Ok(mut entrada) = arquivo_zip.by_name("version.json") {
+                                use std::io::Read;
+                                let mut conteudo = String::new();
+                                if entrada.read_to_string(&mut conteudo).is_ok() {
+                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&conteudo) {
+                                        let _ = std::fs::write(&forge_manifest_local, &conteudo);
+                                        forge_json_opt = Some(parsed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Se obtivemos o manifesto do Forge, mesclar com o manifesto vanilla
+    if let Some(fj) = forge_json_opt {
+        if let Some(main_class) = fj.get("mainClass").and_then(|v| v.as_str()) {
+            println!("[Forge] Aplicando manifesto do Forge (main class: {})...", main_class);
+            details.main_class = main_class.to_string();
+        }
+
+        // Adicionar bibliotecas do Forge
+        let mut nomes_existentes: std::collections::HashSet<String> = details
+            .libraries
+            .iter()
+            .map(|lib| lib.name.clone())
+            .collect();
+
+        if let Some(libs_arr) = fj.get("libraries").and_then(|v| v.as_array()) {
+            for lib_val in libs_arr {
+                let name = lib_val
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                if name.is_empty() || nomes_existentes.contains(&name) {
+                    continue;
+                }
+
+                if let Ok(mut lib) = serde_json::from_value::<crate::launcher::Library>(lib_val.clone()) {
+                    // Garantir que a biblioteca tenha um download path associado
+                    if lib
+                        .downloads
+                        .as_ref()
+                        .and_then(|d| d.artifact.as_ref())
+                        .and_then(|a| a.path.as_ref())
+                        .is_none()
+                    {
+                        let partes: Vec<&str> = name.split(':').collect();
+                        if partes.len() >= 3 {
+                            let grupo = partes[0].replace('.', "/");
+                            let artefato = partes[1];
+                            let versao = partes[2];
+                            let caminho_jar = format!(
+                                "{}/{}/{}/{}-{}.jar",
+                                grupo, artefato, versao, artefato, versao
+                            );
+                            lib.downloads = Some(crate::launcher::LibraryDownloads {
+                                artifact: Some(crate::launcher::Artifact {
+                                    path: Some(caminho_jar.clone()),
+                                    sha1: None,
+                                    size: None,
+                                    url: format!("https://maven.minecraftforge.net/{}", caminho_jar),
+                                }),
+                                classifiers: None,
+                            });
+                        }
+                    }
+                    details.libraries.push(lib);
+                    nomes_existentes.insert(name);
+                }
+            }
+        }
+
+        // Mesclar argumentos JVM e Game do Forge
+        if let Some(fd_args) = fj.get("arguments") {
+            let details_args = details
+                .arguments
+                .get_or_insert_with(|| serde_json::json!({}));
+
+            if let Some(obj) = details_args.as_object_mut() {
+                if let Some(fd_jvm) = fd_args.get("jvm").and_then(|v| v.as_array()) {
+                    let jvm_array = obj
+                        .entry("jvm")
+                        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                        .as_array_mut();
+                    if let Some(arr) = jvm_array {
+                        for arg in fd_jvm {
+                            arr.push(arg.clone());
+                        }
+                    }
+                }
+
+                if let Some(fd_game) = fd_args.get("game").and_then(|v| v.as_array()) {
+                    let game_array = obj
+                        .entry("game")
+                        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                        .as_array_mut();
+                    if let Some(arr) = game_array {
+                        for arg in fd_game {
+                            arr.push(arg.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Verificar se os jars de cliente do Forge foram gerados (forge-*-client.jar)
+        let forge_client_jar = instance_path
+            .join("libraries")
+            .join("net")
+            .join("minecraftforge")
+            .join("forge")
+            .join(&versao_forge)
+            .join(format!("forge-{}-client.jar", versao_forge));
+
+        if !forge_client_jar.exists() {
+            println!("[Forge] Jars do cliente Forge não encontrados. Executando instalação do cliente...");
+            if let Err(e) = install_forge_loader(instance_path, &details.id, forge_version).await {
+                eprintln!("[Forge] Aviso na instalação do loader: {}", e);
+            }
+        }
+
+        return Ok(());
+    }
+
+    // 4. Último recurso: fallback legado para versões muito antigas sem installer
+    println!("[Forge] Usando fallback legado para Forge antigo.");
+    let build_forge = extrair_build_forge(&details.id, forge_version);
+    details.main_class = "net.minecraft.launchwrapper.Launch".to_string();
+
+    if let Some(args) = &mut details.arguments {
+        if let Some(game_args) = args.get_mut("game") {
+            if let Some(arr) = game_args.as_array_mut() {
+                arr.push(serde_json::json!("--tweakClass"));
+                arr.push(serde_json::json!(
+                    "net.minecraftforge.fml.common.launcher.FMLTweaker"
+                ));
+                arr.push(serde_json::json!("--fml.forgeVersion"));
+                arr.push(serde_json::json!(build_forge));
+            }
+        }
+    } else if let Some(legacy) = &mut details.minecraft_arguments {
+        if !legacy.contains("--tweakClass") {
+            legacy.push_str(" --tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker");
+        }
+        if !legacy.contains("--fml.forgeVersion") {
+            legacy.push_str(&format!(" --fml.forgeVersion {}", build_forge));
+        }
+    } else {
+        details.minecraft_arguments = Some(format!(
+            "--tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker --fml.forgeVersion {}",
+            build_forge
+        ));
     }
 
     Ok(())
@@ -1056,13 +1227,24 @@ fn substituir_placeholders_jvm(
     natives_path: &std::path::Path,
     libraries_path: &std::path::Path,
     classpath: &str,
+    version_id: &str,
 ) -> String {
-    arg.replace("${natives_directory}", &natives_path.to_string_lossy())
+    let mut res = arg
+        .replace("${natives_directory}", &natives_path.to_string_lossy())
         .replace("${library_directory}", &libraries_path.to_string_lossy())
         .replace("${classpath_separator}", ";")
         .replace("${classpath}", classpath)
         .replace("${launcher_name}", "DomeLauncher")
         .replace("${launcher_version}", env!("CARGO_PKG_VERSION"))
+        .replace("${version_name}", version_id);
+
+    // O Forge espera ignorar o jar vanilla do jogo pelo nome. Como usamos client.jar,
+    // precisamos adicioná-lo ao ignoreList para evitar colisão de módulos Java 17.
+    if res.starts_with("-DignoreList=") && !res.contains("client.jar") {
+        res.push_str(",client.jar,client");
+    }
+
+    res
 }
 
 pub(super) fn coletar_argumentos_jvm_manifesto(
@@ -1101,9 +1283,15 @@ pub(super) fn coletar_argumentos_jvm_manifesto(
             continue;
         }
 
-        let mut arg = substituir_placeholders_jvm(arg_raw, natives_path, libraries_path, classpath)
-            .trim()
-            .to_string();
+        let mut arg = substituir_placeholders_jvm(
+            arg_raw,
+            natives_path,
+            libraries_path,
+            classpath,
+            &details.id,
+        )
+        .trim()
+        .to_string();
 
         if arg.starts_with("-DFabricMcEmu=") {
             let valor = arg["-DFabricMcEmu=".len()..].trim();

@@ -7,6 +7,51 @@ pub(crate) fn timestamp_atual_segundos() -> u64 {
         .unwrap_or(0)
 }
 
+/// Extrai DLLs nativas dos classifiers das bibliotecas para a pasta de natives.
+fn extrair_natives_de_libs(
+    libs: &[crate::launcher::Library],
+    libraries_path: &std::path::Path,
+    natives_path: &std::path::Path,
+) {
+    for lib in libs {
+        if let Some(downloads) = &lib.downloads {
+            if let Some(classifiers) = &downloads.classifiers {
+                if let Some(native_obj) = classifiers.get("natives-windows") {
+                    if let Some(path) = native_obj["path"].as_str() {
+                        let native_jar_path = libraries_path.join(path);
+                        if native_jar_path.exists() {
+                            if let Ok(file) = std::fs::File::open(&native_jar_path) {
+                                if let Ok(mut archive) = zip::ZipArchive::new(file) {
+                                    for i in 0..archive.len() {
+                                        if let Ok(mut entry) = archive.by_index(i) {
+                                            let name = entry.name().to_string();
+                                            if name.ends_with(".dll") {
+                                                let out = natives_path.join(
+                                                    std::path::Path::new(&name)
+                                                        .file_name()
+                                                        .unwrap(),
+                                                );
+                                                if let Ok(mut out_file) =
+                                                    std::fs::File::create(&out)
+                                                {
+                                                    std::io::copy(&mut entry, &mut out_file).ok();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+
 async fn obter_conta_valida_para_launch(
     state: &LauncherState,
 ) -> Result<crate::launcher::MinecraftAccount, String> {
@@ -114,6 +159,7 @@ async fn launch_instance_com_opcoes(
                         .loader_version
                         .as_ref()
                         .unwrap_or(&"latest".to_string()),
+                    &instance_path,
                 )
                 .await?;
             }
@@ -142,30 +188,50 @@ async fn launch_instance_com_opcoes(
         }
     }
 
-    // 1.2. Verificar se os arquivos existem (devem ter sido baixados na criação)
-    let bin_path = instance_path.join("bin");
-    if !bin_path.join("client.jar").exists() {
-        return Err("Arquivos do jogo não encontrados. Recrie a instância.".to_string());
-    }
-
-    // Verificar se assets existem, se não, baixar
-    let assets_dir = instance_path.join("assets");
-    let indexes_dir = assets_dir.join("indexes");
-    if !indexes_dir.exists()
-        || indexes_dir
-            .read_dir()
-            .map(|mut d| d.next().is_none())
-            .unwrap_or(true)
-    {
-        println!("Assets não encontrados, baixando...");
-        super::instancias_criacao::download_assets_safely(&instance_path, &details).await?;
-    }
+    // 1.2. Garantir que client.jar, bibliotecas e assets estejam presentes
+    super::instancias_criacao::download_instance_files(&instance_path, &details).await?;
 
     // 2. Extrair Natives e Montar Classpath
     std::fs::create_dir_all(&natives_path).map_err(|e| e.to_string())?;
+
+    // Extrair DLLs nativas de todas as libs do manifesto
+    extrair_natives_de_libs(&details.libraries, &libraries_path, &natives_path);
+
+    // 3. Detectar Java correto automaticamente
+    let java_major_manifesto = details.java_version.as_ref().map(|java| java.major_version);
+    let java_exe = crate::comandos::configuracoes_java::ensure_java_for_manifest(
+        details.id.clone(),
+        java_major_manifesto,
+    )
+    .await
+    .map_err(|erro| format!("Não foi possível preparar o Java da instância: {}", erro))?;
+
+    // 4. Carregar configurações globais
+    let settings = crate::comandos::configuracoes_java::get_settings()
+        .await
+        .unwrap_or_default();
+
+    // 5. Montar Argumentos (respeitar config da instância ou global)
+    let mut args = Vec::new();
+
+    let ram_mb = settings.ram_mb;
+    args.push(format!("-Xmx{}M", ram_mb));
+    args.push(format!("-Xms{}M", (ram_mb / 2).max(512)));
+
+    // JVM args customizados (instância ou global)
+    if let Some(ref custom_args) = instance.java_args {
+        for arg in custom_args.split_whitespace() {
+            args.push(arg.to_string());
+        }
+    } else if !settings.java_args.is_empty() {
+        for arg in settings.java_args.split_whitespace() {
+            args.push(arg.to_string());
+        }
+    }
+
+    // 5.1 Montar Classpath a partir das bibliotecas do manifesto
     let mut cp = Vec::new();
 
-    // Adicionar libs ao CP e extrair natives
     for lib in &details.libraries {
         let mut allowed = true;
         if let Some(rules) = &lib.rules {
@@ -192,72 +258,11 @@ async fn launch_instance_com_opcoes(
                     if let Some(path) = &artifact.path {
                         let full_path = libraries_path.join(path);
                         if full_path.exists() {
-                            cp.push(full_path.to_string_lossy().to_string());
-                        }
-                    }
-                }
-
-                if let Some(classifiers) = &downloads.classifiers {
-                    let native_key = "natives-windows";
-                    if let Some(native_obj) = classifiers.get(native_key) {
-                        if let Some(path) = native_obj["path"].as_str() {
-                            let native_jar_path = libraries_path.join(path);
-                            if native_jar_path.exists() {
-                                if let Ok(file) = std::fs::File::open(&native_jar_path) {
-                                    if let Ok(mut archive) = zip::ZipArchive::new(file) {
-                                        for i in 0..archive.len() {
-                                            if let Ok(mut file) = archive.by_index(i) {
-                                                let name = file.name().to_string();
-                                                if name.ends_with(".dll") {
-                                                    let out_path = natives_path.join(
-                                                        std::path::Path::new(&name)
-                                                            .file_name()
-                                                            .unwrap(),
-                                                    );
-                                                    if let Ok(mut out_file) =
-                                                        std::fs::File::create(&out_path)
-                                                    {
-                                                        std::io::copy(&mut file, &mut out_file)
-                                                            .ok();
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                            let path_str = full_path.to_string_lossy().to_string();
+                            if !cp.contains(&path_str) {
+                                cp.push(path_str);
                             }
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    // Forge legado (ex.: 1.12.2) pode exigir jars extras fora do manifesto vanilla.
-    if loader_normalizado.as_deref() == Some("forge") {
-        let mut pilha = vec![libraries_path.clone()];
-        while let Some(pasta) = pilha.pop() {
-            let entradas = match std::fs::read_dir(&pasta) {
-                Ok(valor) => valor,
-                Err(_) => continue,
-            };
-
-            for entrada in entradas.flatten() {
-                let caminho = entrada.path();
-                if caminho.is_dir() {
-                    pilha.push(caminho);
-                    continue;
-                }
-
-                if caminho
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| ext.eq_ignore_ascii_case("jar"))
-                    .unwrap_or(false)
-                {
-                    let jar = caminho.to_string_lossy().to_string();
-                    if !cp.contains(&jar) {
-                        cp.push(jar);
                     }
                 }
             }
@@ -267,40 +272,7 @@ async fn launch_instance_com_opcoes(
     cp.push(jar_path.to_string_lossy().to_string());
     let cp_val = cp.join(";");
 
-    // 3. Detectar Java correto automaticamente
-    let java_major_manifesto = details.java_version.as_ref().map(|java| java.major_version);
-    let java_exe = crate::comandos::configuracoes_java::ensure_java_for_manifest(
-        details.id.clone(),
-        java_major_manifesto,
-    )
-    .await
-    .map_err(|erro| format!("Não foi possível preparar o Java da instância: {}", erro))?;
-
-    // 4. Carregar configurações globais
-    let settings = crate::comandos::configuracoes_java::get_settings()
-        .await
-        .unwrap_or_default();
-
-    // 5. Montar Argumentos (respeitar config da instância ou global)
-    let mut args = Vec::new();
-
-    // A configuração global de RAM é a fonte única para todas as instâncias.
-    let ram_mb = settings.ram_mb;
-    args.push(format!("-Xmx{}M", ram_mb));
-    args.push(format!("-Xms{}M", (ram_mb / 2).max(512)));
-
-    // JVM args das configurações
-    if let Some(ref custom_args) = instance.java_args {
-        for arg in custom_args.split_whitespace() {
-            args.push(arg.to_string());
-        }
-    } else if !settings.java_args.is_empty() {
-        for arg in settings.java_args.split_whitespace() {
-            args.push(arg.to_string());
-        }
-    }
-
-    // JVM args vindos do manifesto (Fabric/Forge/etc), com placeholders resolvidos.
+    // 5.2 Adicionar JVM args do manifesto (Fabric/Forge/NeoForge), com placeholders resolvidos
     for arg in super::instancias_criacao::coletar_argumentos_jvm_manifesto(
         &details,
         &natives_path,
@@ -310,25 +282,17 @@ async fn launch_instance_com_opcoes(
         args.push(arg);
     }
 
-    args.push(format!(
-        "-Djava.library.path={}",
-        natives_path.to_string_lossy()
-    ));
+    args.push(format!("-Djava.library.path={}", natives_path.to_string_lossy()));
     args.push("-cp".to_string());
     args.push(cp_val);
     args.push(details.main_class.clone());
 
-    let game_args_raw = if let Some(modern_args) = &details.arguments {
+    // 5.3 Montar Game args (vanilla + loader)
+    let game_args_raw: Vec<String> = if let Some(modern_args) = &details.arguments {
         if let Some(game) = modern_args.get("game") {
-            let mut collected = Vec::new();
-            if let Some(arr) = game.as_array() {
-                for val in arr {
-                    if let Some(s) = val.as_str() {
-                        collected.push(s.to_string());
-                    }
-                }
-            }
-            collected
+            game.as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default()
         } else {
             Vec::new()
         }
@@ -342,7 +306,7 @@ async fn launch_instance_com_opcoes(
     let width = instance.width.unwrap_or(settings.width);
     let height = instance.height.unwrap_or(settings.height);
 
-    for arg in game_args_raw {
+    for arg in &game_args_raw {
         let replaced = arg
             .replace("${auth_player_name}", &account.name)
             .replace("${version_name}", &details.id)
@@ -362,6 +326,7 @@ async fn launch_instance_com_opcoes(
 
         args.push(replaced);
     }
+
 
     if let Some(endereco_servidor) = quick_play_servidor {
         let endereco_servidor = endereco_servidor.trim();
