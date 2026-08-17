@@ -49,9 +49,6 @@ fn extrair_natives_de_libs(
     }
 }
 
-
-
-
 async fn obter_conta_valida_para_launch(
     state: &LauncherState,
 ) -> Result<crate::launcher::MinecraftAccount, String> {
@@ -282,7 +279,10 @@ async fn launch_instance_com_opcoes(
         args.push(arg);
     }
 
-    args.push(format!("-Djava.library.path={}", natives_path.to_string_lossy()));
+    args.push(format!(
+        "-Djava.library.path={}",
+        natives_path.to_string_lossy()
+    ));
     args.push("-cp".to_string());
     args.push(cp_val);
     args.push(details.main_class.clone());
@@ -291,7 +291,11 @@ async fn launch_instance_com_opcoes(
     let game_args_raw: Vec<String> = if let Some(modern_args) = &details.arguments {
         if let Some(game) = modern_args.get("game") {
             game.as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -326,7 +330,6 @@ async fn launch_instance_com_opcoes(
 
         args.push(replaced);
     }
-
 
     if let Some(endereco_servidor) = quick_play_servidor {
         let endereco_servidor = endereco_servidor.trim();

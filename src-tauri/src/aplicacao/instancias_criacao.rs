@@ -18,7 +18,6 @@ pub(crate) struct LoaderVersionsResponse {
     pub versions: Vec<LoaderVersionInfo>,
 }
 
-
 /// Busca versões disponíveis dos loaders (Fabric, Forge, NeoForge)
 #[tauri::command]
 pub(crate) async fn get_loader_versions(
@@ -886,7 +885,10 @@ pub(super) async fn adjust_forge_manifest(
         if let Ok(resposta) = client.get(&forge_manifest_url).send().await {
             if resposta.status().is_success() {
                 if let Ok(parsed) = resposta.json::<serde_json::Value>().await {
-                    let _ = std::fs::write(&forge_manifest_local, serde_json::to_string_pretty(&parsed).unwrap_or_default());
+                    let _ = std::fs::write(
+                        &forge_manifest_local,
+                        serde_json::to_string_pretty(&parsed).unwrap_or_default(),
+                    );
                     forge_json_opt = Some(parsed);
                 }
             }
@@ -894,7 +896,10 @@ pub(super) async fn adjust_forge_manifest(
 
         // 2.2 Tentar extrair version.json de dentro do installer JAR (Forge moderno 1.13+)
         if forge_json_opt.is_none() {
-            println!("[Forge] Buscando manifesto dentro do instalador Forge {}...", versao_forge);
+            println!(
+                "[Forge] Buscando manifesto dentro do instalador Forge {}...",
+                versao_forge
+            );
             let installer_url = format!(
                 "https://maven.minecraftforge.net/net/minecraftforge/forge/{}/forge-{}-installer.jar",
                 versao_forge, versao_forge
@@ -903,12 +908,16 @@ pub(super) async fn adjust_forge_manifest(
             if let Ok(resposta) = client.get(&installer_url).send().await {
                 if resposta.status().is_success() {
                     if let Ok(bytes) = resposta.bytes().await {
-                        if let Ok(mut arquivo_zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
+                        if let Ok(mut arquivo_zip) =
+                            zip::ZipArchive::new(std::io::Cursor::new(bytes))
+                        {
                             if let Ok(mut entrada) = arquivo_zip.by_name("version.json") {
                                 use std::io::Read;
                                 let mut conteudo = String::new();
                                 if entrada.read_to_string(&mut conteudo).is_ok() {
-                                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&conteudo) {
+                                    if let Ok(parsed) =
+                                        serde_json::from_str::<serde_json::Value>(&conteudo)
+                                    {
                                         let _ = std::fs::write(&forge_manifest_local, &conteudo);
                                         forge_json_opt = Some(parsed);
                                     }
@@ -924,7 +933,10 @@ pub(super) async fn adjust_forge_manifest(
     // 3. Se obtivemos o manifesto do Forge, mesclar com o manifesto vanilla
     if let Some(fj) = forge_json_opt {
         if let Some(main_class) = fj.get("mainClass").and_then(|v| v.as_str()) {
-            println!("[Forge] Aplicando manifesto do Forge (main class: {})...", main_class);
+            println!(
+                "[Forge] Aplicando manifesto do Forge (main class: {})...",
+                main_class
+            );
             details.main_class = main_class.to_string();
         }
 
@@ -947,7 +959,9 @@ pub(super) async fn adjust_forge_manifest(
                     continue;
                 }
 
-                if let Ok(mut lib) = serde_json::from_value::<crate::launcher::Library>(lib_val.clone()) {
+                if let Ok(mut lib) =
+                    serde_json::from_value::<crate::launcher::Library>(lib_val.clone())
+                {
                     // Garantir que a biblioteca tenha um download path associado
                     if lib
                         .downloads
@@ -970,7 +984,10 @@ pub(super) async fn adjust_forge_manifest(
                                     path: Some(caminho_jar.clone()),
                                     sha1: None,
                                     size: None,
-                                    url: format!("https://maven.minecraftforge.net/{}", caminho_jar),
+                                    url: format!(
+                                        "https://maven.minecraftforge.net/{}",
+                                        caminho_jar
+                                    ),
                                 }),
                                 classifiers: None,
                             });
