@@ -762,9 +762,11 @@ export default function SocialSidebar({
 
     try {
       setMensagemTransferencia('Preparando a instância para envio...');
+      console.log('[SocialSync] Iniciando exportação da instância para upload...', { instanciaId, pedidoId });
       const pacote = await invoke<ResultadoExportacaoSyncSocial>('export_launcher_social_sync_package', {
         instanceId: instanciaId,
       });
+      console.log('[SocialSync] Pacote gerado com sucesso:', pacote);
       await invoke('upload_launcher_social_sync_package', {
         apiBaseUrl: API_DOME_LAUNCHER_URL,
         accessToken: token,
@@ -774,10 +776,12 @@ export default function SocialSidebar({
           caminhoArquivo: pacote.caminhoArquivo,
         },
       });
+      console.log('[SocialSync] Upload concluído com sucesso!');
       setMensagemSync('Pacote de sync enviado com sucesso.');
       setMensagemTransferencia('Instância enviada.');
       pedidosSyncRecebidosRef.current.delete(pedidoId);
     } catch (erro) {
+      console.error('[SocialSync] Erro no fluxo de upload:', erro);
       const mensagem = mensagemErro(erro, 'Falha ao enviar a instância.');
       setMensagemSync(mensagem);
       setMensagemTransferencia(mensagem);
@@ -798,6 +802,7 @@ export default function SocialSidebar({
     const idBiblioteca = `social-sync-${pedidoId}`;
     const nomeInstancia = evento.instanciaNome?.trim() || 'Instância social';
 
+    console.log('[SocialSync] Iniciando fluxo de download:', { pedidoId, nomeInstancia, friendProfileId });
     setProcessandoAtividade(true);
     setMensagemSync('Baixando e preparando a instância...');
     publicarProgressoTransferenciaSocial({
@@ -820,6 +825,7 @@ export default function SocialSidebar({
     });
 
     try {
+      console.log('[SocialSync] Invocando download_import_launcher_social_sync_package...');
       const resultado = await invoke<ResultadoDownloadImportacaoSyncSocial>(
         'download_import_launcher_social_sync_package',
         {
@@ -828,6 +834,7 @@ export default function SocialSidebar({
           tokenDownload,
         }
       );
+      console.log('[SocialSync] Download e importação finalizados com sucesso:', resultado);
       removeCreatingInstance(idBiblioteca);
       setMensagemSync('Instância adicionada à biblioteca.');
       publicarProgressoTransferenciaSocial({
@@ -842,6 +849,7 @@ export default function SocialSidebar({
       }));
       pedidosSyncEnviadosRef.current.delete(pedidoId);
     } catch (erro) {
+      console.error('[SocialSync] Erro no fluxo de download/importação:', erro);
       const mensagem = mensagemErro(erro, 'Falha ao baixar ou importar a instância.');
       setMensagemSync(mensagem);
       errorCreatingInstance(idBiblioteca, mensagem);

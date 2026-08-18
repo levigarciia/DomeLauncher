@@ -1227,13 +1227,34 @@ fn adicionar_diretorio_ao_zip(
         if tipo.is_dir() {
             adicionar_diretorio_ao_zip(zip, &entrada.path(), &caminho_no_zip, options)?;
         } else if tipo.is_file() {
-            let dados = std::fs::read(entrada.path())
-                .map_err(|e| format!("Erro ao ler arquivo {}: {}", entrada.path().display(), e))?;
-            zip.start_file(&caminho_no_zip, options)
-                .map_err(|e| format!("Erro ao adicionar {} ao zip: {}", caminho_no_zip, e))?;
+            // Se o jogo estiver aberto, alguns arquivos podem estar com lock temporário.
+            // Ignoramos arquivos inacessíveis sem abortar a exportação do pacote todo.
+            let dados = match std::fs::read(entrada.path()) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    eprintln!(
+                        "[Exportação] Aviso: ignorando arquivo inacessível '{}': {}",
+                        entrada.path().display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+            if let Err(e) = zip.start_file(&caminho_no_zip, options) {
+                eprintln!(
+                    "[Exportação] Aviso: erro ao criar '{}' no zip: {}",
+                    caminho_no_zip, e
+                );
+                continue;
+            }
             use std::io::Write;
-            zip.write_all(&dados)
-                .map_err(|e| format!("Erro ao escrever {} no zip: {}", caminho_no_zip, e))?;
+            if let Err(e) = zip.write_all(&dados) {
+                eprintln!(
+                    "[Exportação] Aviso: erro ao escrever '{}' no zip: {}",
+                    caminho_no_zip, e
+                );
+                continue;
+            }
         }
     }
 
@@ -1345,12 +1366,12 @@ fn exportar_instancia_interno(
     for arquivo in arquivos_avulsos {
         let caminho = instancia.path.join(arquivo);
         if caminho.exists() && caminho.is_file() {
-            let dados =
-                std::fs::read(&caminho).map_err(|e| format!("Erro ao ler {}: {}", arquivo, e))?;
-            zip.start_file(arquivo, options)
-                .map_err(|e| format!("Erro ao adicionar {}: {}", arquivo, e))?;
-            zip.write_all(&dados)
-                .map_err(|e| format!("Erro ao escrever {}: {}", arquivo, e))?;
+            if let Ok(dados) = std::fs::read(&caminho) {
+                if zip.start_file(arquivo, options).is_ok() {
+                    use std::io::Write;
+                    let _ = zip.write_all(&dados);
+                }
+            }
         }
     }
 

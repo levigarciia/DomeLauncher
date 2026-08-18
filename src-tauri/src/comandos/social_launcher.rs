@@ -1013,7 +1013,7 @@ pub async fn download_import_launcher_social_sync_package(
     let mut tamanho_recebido = 0_u64;
     let mut stream = resposta.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let dados = chunk.map_err(|e| format!("Erro ao baixar pacote de sync: {}", e))?;
+        let dados = chunk.map_err(|e| format!("Erro ao baixar chunk do pacote de sync: {}", e))?;
         tamanho_recebido += dados.len() as u64;
         if tamanho_recebido > LIMITE_PACOTE_SYNC {
             drop(arquivo);
@@ -1026,11 +1026,41 @@ pub async fn download_import_launcher_social_sync_package(
             .map_err(|e| format!("Erro ao gravar pacote de sync em disco: {}", e))?;
     }
 
+    // Garante que todos os dados foram persistidos e fecha o arquivo para permitir leitura no Windows
+    arquivo
+        .flush()
+        .await
+        .map_err(|e| format!("Erro ao finalizar arquivo de sync: {}", e))?;
+    drop(arquivo);
+
+    eprintln!(
+        "[SocialSync] Download concluído: {} bytes gravados em {:?}",
+        tamanho_recebido, caminho_arquivo
+    );
+
+    if tamanho_recebido == 0 {
+        let _ = tokio::fs::remove_file(&caminho_arquivo).await;
+        return Err("Pacote de sync recebido está vazio (0 bytes).".to_string());
+    }
+
+    eprintln!("[SocialSync] Iniciando importação da instância...");
     let resultado_importacao = crate::aplicacao::importacao_exportacao::importar_instancia_arquivo(
         caminho_arquivo.to_string_lossy().to_string(),
         state,
     )
-    .await?;
+    .await
+    .map_err(|e| {
+        eprintln!("[SocialSync] Erro na importação: {}", e);
+        e
+    })?;
+
+    eprintln!(
+        "[SocialSync] Instância importada com sucesso: {:?}",
+        resultado_importacao.instancia_id
+    );
+
+    // Limpa arquivo temporário baixado
+    let _ = tokio::fs::remove_file(&caminho_arquivo).await;
 
     Ok(ResultadoDownloadImportacaoSyncSocial {
         pedido_id,

@@ -2,29 +2,49 @@ import React, { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Loader2 } from "../iconesPixelados";
-import modeloClassicoUrl from "../assets/models/classic-player.gltf?url";
-import modeloSlimUrl from "../assets/models/slim-player.gltf?url";
+import modeloClassicoRaw from "../assets/models/classic-player.gltf?raw";
+import modeloSlimRaw from "../assets/models/slim-player.gltf?raw";
 
-// Cache de modelos GLTF para evitar recarregamentos desnecessários
+// Cache de modelos GLTF parseados da memória
 const cacheModelo = new Map<string, GLTF>();
-const cachePromessaModelo = new Map<string, Promise<GLTF>>();
 
-function carregarModelo(url: string): Promise<GLTF> {
-  if (cacheModelo.has(url)) return Promise.resolve(cacheModelo.get(url)!);
-  if (cachePromessaModelo.has(url)) return cachePromessaModelo.get(url)!;
+function parsearModelo(rawJson: string): Promise<GLTF> {
+  if (cacheModelo.has(rawJson)) {
+    return Promise.resolve(cacheModelo.get(rawJson)!);
+  }
 
   const loader = new GLTFLoader();
-  const promessa = new Promise<GLTF>((resolve, reject) => {
-    loader.load(url, (gltf) => { cacheModelo.set(url, gltf); resolve(gltf); }, undefined, reject);
-  }).finally(() => cachePromessaModelo.delete(url));
-
-  cachePromessaModelo.set(url, promessa);
-  return promessa;
+  return new Promise<GLTF>((resolve, reject) => {
+    loader.parse(
+      rawJson,
+      "",
+      (gltf) => {
+        cacheModelo.set(rawJson, gltf);
+        resolve(gltf);
+      },
+      (error) => {
+        reject(error);
+      },
+    );
+  });
 }
 
-// Utility functions for cape texture handling
+function clonarCenaModelo(source: THREE.Object3D): THREE.Group {
+  const cloned = cloneSkeleton(source) as THREE.Group;
+  cloned.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    mesh.material = Array.isArray(mesh.material)
+      ? mesh.material.map((mat) => mat.clone())
+      : mesh.material.clone();
+  });
+  return cloned;
+}
+
+// Utility functions for cape and skin texture handling
 function createTransparentTexture(): THREE.Texture {
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = 1;
@@ -41,6 +61,88 @@ function createTransparentTexture(): THREE.Texture {
   return texture;
 }
 
+function applyMap(mat: THREE.MeshStandardMaterial, texture: THREE.Texture | null): boolean {
+  const hadMap = mat.map !== null;
+  const hasMap = texture !== null;
+  if (mat.map !== texture) {
+    mat.map = texture;
+  }
+  return hadMap !== hasMap;
+}
+
+function setShaderMaterialProperties(
+  mat: THREE.MeshStandardMaterial,
+  properties: {
+    alphaTest: number;
+    flatShading: boolean;
+    side: THREE.Side;
+    toneMapped: boolean;
+    transparent?: boolean;
+  },
+): boolean {
+  let needsUpdate = false;
+  if (mat.alphaTest !== properties.alphaTest) {
+    mat.alphaTest = properties.alphaTest;
+    needsUpdate = true;
+  }
+  if (mat.flatShading !== properties.flatShading) {
+    mat.flatShading = properties.flatShading;
+    needsUpdate = true;
+  }
+  if (mat.side !== properties.side) {
+    mat.side = properties.side;
+    needsUpdate = true;
+  }
+  if (mat.toneMapped !== properties.toneMapped) {
+    mat.toneMapped = properties.toneMapped;
+    needsUpdate = true;
+  }
+  if (properties.transparent !== undefined && mat.transparent !== properties.transparent) {
+    mat.transparent = properties.transparent;
+    needsUpdate = true;
+  }
+  return needsUpdate;
+}
+
+function setCommonMaterialProperties(mat: THREE.MeshStandardMaterial): void {
+  if (mat.metalness !== 0) mat.metalness = 0;
+  if (mat.color.getHex() !== 0xffffff) mat.color.set(0xffffff);
+  if (mat.roughness !== 1) mat.roughness = 1;
+  if (!mat.depthTest) mat.depthTest = true;
+  if (!mat.depthWrite) mat.depthWrite = true;
+}
+
+function applyTexture(model: THREE.Object3D, texture: THREE.Texture): void {
+  model.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      const isSkinLayer = mesh.name.endsWith("_Layer");
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+      materials.forEach((mat: THREE.Material) => {
+        if (mat instanceof THREE.MeshStandardMaterial) {
+          if (mat.name !== "cape") {
+            const mapNeedsUpdate = applyMap(mat, texture);
+            const propertiesNeedUpdate = setShaderMaterialProperties(mat, {
+              alphaTest: 0.1,
+              flatShading: true,
+              side: THREE.FrontSide,
+              toneMapped: false,
+              transparent: isSkinLayer,
+            });
+
+            setCommonMaterialProperties(mat);
+
+            if (mapNeedsUpdate || propertiesNeedUpdate) {
+              mat.needsUpdate = true;
+            }
+          }
+        }
+      });
+    }
+  });
+}
+
 function applyCapeTexture(
   model: THREE.Object3D,
   texture: THREE.Texture | null,
@@ -49,25 +151,27 @@ function applyCapeTexture(
   model.traverse((child) => {
     if ((child as THREE.Mesh).isMesh) {
       const mesh = child as THREE.Mesh;
-      const materials = Array.isArray(mesh.material)
-        ? mesh.material
-        : [mesh.material];
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 
       materials.forEach((mat: THREE.Material) => {
         if (mat instanceof THREE.MeshStandardMaterial) {
           if (mat.name === "cape") {
-            mat.map = texture || transparentTexture || null;
-            mat.transparent = !texture || transparentTexture ? true : false;
-            mat.metalness = 0;
-            mat.color.set(0xffffff);
-            mat.toneMapped = false;
-            mat.flatShading = true;
-            mat.roughness = 1;
-            mat.needsUpdate = true;
-            mat.depthTest = true;
-            mat.depthWrite = true;
-            mat.side = THREE.DoubleSide;
-            mat.alphaTest = 0.1;
+            const nextMap = texture || transparentTexture || null;
+            const mapNeedsUpdate = applyMap(mat, nextMap);
+            const propertiesNeedUpdate = setShaderMaterialProperties(mat, {
+              alphaTest: 0.1,
+              flatShading: true,
+              side: THREE.DoubleSide,
+              toneMapped: false,
+              transparent: !texture || !!transparentTexture,
+            });
+
+            setCommonMaterialProperties(mat);
+
+            if (mapNeedsUpdate || propertiesNeedUpdate) {
+              mat.needsUpdate = true;
+            }
+
             mat.visible = !!texture;
           }
         }
@@ -95,8 +199,8 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
   className,
   onReady,
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null); // Container principal
-  const mountRef = useRef<HTMLDivElement>(null); // Container EXCLUSIVO do Three.js
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const modelRef = useRef<THREE.Group | null>(null);
@@ -106,15 +210,19 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
   const [erroModelo, setErroModelo] = useState(false);
   const [tentativa, setTentativa] = useState(0);
 
-  // Ref para armazenar a função de playAnimation acessível fora do useEffect principal
   const playAnimationRef = useRef<(name: string, once?: boolean) => void>(
     () => {},
   );
 
-  // Cape-related state
+  const skinTextureRef = useRef<THREE.Texture | null>(null);
   const capeTextureRef = useRef<THREE.Texture | null>(null);
   const lastCapeSrcRef = useRef<string | undefined>(undefined);
-  const transparentTexture = createTransparentTexture();
+  const transparentTextureRef = useRef<THREE.Texture | null>(null);
+
+  if (!transparentTextureRef.current) {
+    transparentTextureRef.current = createTransparentTexture();
+  }
+  const transparentTexture = transparentTextureRef.current;
 
   // Efeito principal: Configuração da cena Three.js
   useEffect(() => {
@@ -138,12 +246,10 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-    // Limpeza segura: remove apenas os filhos do mountRef (que é só do ThreeJS)
     while (mountRef.current.firstChild) {
       mountRef.current.removeChild(mountRef.current.firstChild);
     }
     mountRef.current.appendChild(renderer.domElement);
-
     rendererRef.current = renderer;
 
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -157,7 +263,6 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
     const scene = new THREE.Scene();
 
-    // Luz
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
     dirLight.position.set(-3, 5, 4);
     scene.add(dirLight);
@@ -165,7 +270,6 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     const ambientLight = new THREE.AmbientLight(0xffffff, 1.5);
     scene.add(ambientLight);
 
-    // Resize Observer no container principal
     const resizeObserver = new ResizeObserver(() => {
       if (!containerRef.current || !rendererRef.current) return;
       const newWidth = containerRef.current.clientWidth;
@@ -179,40 +283,44 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     });
     resizeObserver.observe(containerRef.current);
 
-    const modelPath = model === "slim" ? modeloSlimUrl : modeloClassicoUrl;
+    const modelRaw = model === "slim" ? modeloSlimRaw : modeloClassicoRaw;
 
-    // Carrega o modelo (com cache) e inicializa a cena
-    // As texturas placeholder já estão embutidas no GLTF como data URIs
-    carregarModelo(modelPath).then((gltf) => {
-      const object = gltf.scene.clone();
+    parsearModelo(modelRaw)
+      .then((gltf) => {
+        const object = clonarCenaModelo(gltf.scene);
 
-      object.position.x = 0;
-      object.position.y = 0;
-      object.rotation.y = Math.PI / 8;
+        object.position.x = 0;
+        object.position.y = 0;
+        object.rotation.y = Math.PI / 8;
 
-      modelRef.current = object;
-      scene.add(object);
+        modelRef.current = object;
+        scene.add(object);
 
-      const mixer = new THREE.AnimationMixer(object);
-      mixerRef.current = mixer;
+        const mixer = new THREE.AnimationMixer(object);
+        mixerRef.current = mixer;
 
-      gltf.animations.forEach((clip) => {
-        const action = mixer.clipAction(clip);
-        actionsRef.current[clip.name] = action;
+        gltf.animations.forEach((clip) => {
+          const action = mixer.clipAction(clip);
+          actionsRef.current[clip.name] = action;
+        });
+
+        playAnimationRef.current("idle");
+
+        // Aplica as texturas que já estiverem carregadas
+        if (skinTextureRef.current) {
+          applyTexture(object, skinTextureRef.current);
+        }
+        applyCapeTexture(object, capeTextureRef.current, transparentTexture);
+
+        setLoading(false);
+        if (onReady) onReady();
+      })
+      .catch((error) => {
+        console.error("Erro ao carregar modelo GLTF:", error);
+        setLoading(false);
+        setErroModelo(true);
       });
 
-      playAnimationRef.current("idle");
-      applyCapeTexture(object, capeTextureRef.current, transparentTexture);
-
-      setLoading(false);
-      if (onReady) onReady();
-    }).catch((error) => {
-      console.error("Erro ao carregar modelo GLTF:", error);
-      setLoading(false);
-      setErroModelo(true);
-    });
-
-    // Animation Loop
     const clock = new THREE.Clock();
     let animationId: number;
 
@@ -230,7 +338,6 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
       cancelAnimationFrame(animationId);
       if (rendererRef.current) {
         rendererRef.current.dispose();
-        // Verifica segurança antes de remover
         if (
           mountRef.current &&
           rendererRef.current.domElement.parentNode === mountRef.current
@@ -290,9 +397,9 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     playAnimationRef.current = playAnimation;
   });
 
-  // Load Skin
+  // Load Skin Texture
   useEffect(() => {
-    if (!modelRef.current) return;
+    if (!skinUrl) return;
 
     const textureLoader = new THREE.TextureLoader();
     textureLoader.load(
@@ -303,24 +410,18 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
         texture.colorSpace = THREE.SRGBColorSpace;
         texture.flipY = false;
 
-        modelRef.current?.traverse((child) => {
-          if ((child as THREE.Mesh).isMesh) {
-            const mesh = child as THREE.Mesh;
-            if (mesh.material) {
-              const mat = mesh.material as THREE.MeshStandardMaterial;
-              mat.map = texture;
-              mat.needsUpdate = true;
-            }
-          }
-        });
+        skinTextureRef.current = texture;
+
+        if (modelRef.current) {
+          applyTexture(modelRef.current, texture);
+        }
 
         if (!loading) {
-          // 'wave' não existe no modelo padrão modrinth, usar 'interact'
           playAnimation("interact", true);
         }
       },
       undefined,
-      (err) => console.error("Error loading skin texture:", err),
+      (err) => console.error("Erro ao carregar textura da skin:", err),
     );
   }, [skinUrl, loading]);
 
@@ -347,7 +448,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
           }
         },
         undefined,
-        (err) => console.error("Error loading cape texture:", err),
+        (err) => console.error("Erro ao carregar textura da capa:", err),
       );
     } else {
       capeTextureRef.current = null;

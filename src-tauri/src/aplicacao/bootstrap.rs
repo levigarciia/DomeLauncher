@@ -1,8 +1,18 @@
 use super::*;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            {
+                if let Some(janela) = app.get_webview_window("main") {
+                    janela.open_devtools();
+                }
+            }
+            Ok(())
+        })
         .manage(LauncherState::new())
         .manage(crate::comandos::presenca_discord::EstadoDiscordPresence::default())
         .plugin(tauri_plugin_opener::init())
