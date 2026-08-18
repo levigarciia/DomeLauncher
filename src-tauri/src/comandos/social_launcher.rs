@@ -231,6 +231,15 @@ fn criar_cliente_http_launcher() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Erro ao criar cliente HTTP do launcher: {}", e))
 }
 
+// Cliente sem timeout fixo para transfersências grandes (upload/download de instâncias)
+fn criar_cliente_http_transferencia() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .user_agent("DomeLauncher/1.0 (+https://domestudios.com.br)")
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP de transferência: {}", e))
+}
+
 pub async fn extrair_mensagem_erro_launcher(resposta: reqwest::Response, contexto: &str) -> String {
     let status = resposta.status();
     let corpo = resposta.text().await.unwrap_or_default();
@@ -841,10 +850,30 @@ pub async fn export_launcher_social_sync_package(
     instance_id: String,
     state: State<'_, LauncherState>,
 ) -> Result<ResultadoExportacaoSyncSocial, String> {
-    let resultado = crate::aplicacao::importacao_exportacao::exportar_instancia_social_sem_saves(
-        &state,
-        instance_id.trim(),
-    )?;
+    let instance_id = instance_id.trim().to_string();
+
+    // Captura apenas o path necessário para evitar mover o state inteiro
+    let instances_path = state.instances_path.clone();
+    let account = state.account.clone();
+    let accounts = state.accounts.clone();
+    let processos = state.processos_instancias.clone();
+
+    // A exportação zip é I/O síncrono pesado — mover para thread blocking
+    let resultado = tauri::async_runtime::spawn_blocking(move || {
+        let state_local = LauncherState {
+            account,
+            accounts,
+            instances_path,
+            processos_instancias: processos,
+        };
+        crate::aplicacao::importacao_exportacao::exportar_instancia_social_sem_saves(
+            &state_local,
+            &instance_id,
+        )
+    })
+    .await
+    .map_err(|e| format!("Erro ao iniciar exportação: {}", e))?
+    .map_err(|e| format!("Falha na exportação da instância: {}", e))?;
 
     let caminho = resultado
         .caminho_arquivo
@@ -897,7 +926,7 @@ pub async fn upload_launcher_social_sync_package(
         api_base,
         urlencoding::encode(&pedido_id)
     );
-    let client = criar_cliente_http_launcher()?;
+    let client = criar_cliente_http_transferencia()?;
     let resposta = client
         .post(&endpoint)
         .bearer_auth(token)
@@ -940,7 +969,7 @@ pub async fn download_import_launcher_social_sync_package(
         urlencoding::encode(&pedido_id),
         urlencoding::encode(&token_download)
     );
-    let client = criar_cliente_http_launcher()?;
+    let client = criar_cliente_http_transferencia()?;
     let resposta = client
         .get(&endpoint)
         .send()

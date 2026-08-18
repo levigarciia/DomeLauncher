@@ -1,10 +1,28 @@
 import React, { useRef, useEffect, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Loader2 } from "../iconesPixelados";
 import modeloClassicoUrl from "../assets/models/classic-player.gltf?url";
 import modeloSlimUrl from "../assets/models/slim-player.gltf?url";
+
+// Cache de modelos GLTF para evitar recarregamentos desnecessários
+const cacheModelo = new Map<string, GLTF>();
+const cachePromessaModelo = new Map<string, Promise<GLTF>>();
+
+function carregarModelo(url: string): Promise<GLTF> {
+  if (cacheModelo.has(url)) return Promise.resolve(cacheModelo.get(url)!);
+  if (cachePromessaModelo.has(url)) return cachePromessaModelo.get(url)!;
+
+  const loader = new GLTFLoader();
+  const promessa = new Promise<GLTF>((resolve, reject) => {
+    loader.load(url, (gltf) => { cacheModelo.set(url, gltf); resolve(gltf); }, undefined, reject);
+  }).finally(() => cachePromessaModelo.delete(url));
+
+  cachePromessaModelo.set(url, promessa);
+  return promessa;
+}
 
 // Utility functions for cape texture handling
 function createTransparentTexture(): THREE.Texture {
@@ -161,59 +179,38 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     });
     resizeObserver.observe(containerRef.current);
 
-    const gerenciadorCarregamento = new THREE.LoadingManager();
-    gerenciadorCarregamento.setURLModifier((url) => {
-      const caminho = url.split("?")[0].toLowerCase();
-      if (
-        caminho.endsWith("/steve.png") ||
-        caminho.endsWith("/sunny.png") ||
-        caminho.endsWith("/cape")
-      ) {
-        return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/8QAAAABJRU5ErkJggg==";
-      }
-      return url;
-    });
-    const loader = new GLTFLoader(gerenciadorCarregamento);
     const modelPath = model === "slim" ? modeloSlimUrl : modeloClassicoUrl;
 
-    loader.load(
-      modelPath,
-      (gltf) => {
-        const object = gltf.scene;
+    // Carrega o modelo (com cache) e inicializa a cena
+    // As texturas placeholder já estão embutidas no GLTF como data URIs
+    carregarModelo(modelPath).then((gltf) => {
+      const object = gltf.scene.clone();
 
-        // Ajuste definido pelo usuário
-        object.position.x = 0;
-        object.position.y = 0;
+      object.position.x = 0;
+      object.position.y = 0;
+      object.rotation.y = Math.PI / 8;
 
-        object.rotation.y = Math.PI / 8;
+      modelRef.current = object;
+      scene.add(object);
 
-        modelRef.current = object;
-        scene.add(object);
+      const mixer = new THREE.AnimationMixer(object);
+      mixerRef.current = mixer;
 
-        const mixer = new THREE.AnimationMixer(object);
-        mixerRef.current = mixer;
+      gltf.animations.forEach((clip) => {
+        const action = mixer.clipAction(clip);
+        actionsRef.current[clip.name] = action;
+      });
 
-        // Mapear animações
-        gltf.animations.forEach((clip) => {
-          const action = mixer.clipAction(clip);
-          actionsRef.current[clip.name] = action;
-        });
+      playAnimationRef.current("idle");
+      applyCapeTexture(object, capeTextureRef.current, transparentTexture);
 
-        playAnimationRef.current("idle");
-
-        // Apply cape texture if available
-        applyCapeTexture(object, capeTextureRef.current, transparentTexture);
-
-        setLoading(false);
-        if (onReady) onReady();
-      },
-      undefined,
-      (error) => {
-        console.error("Error loading GLTF:", error);
-        setLoading(false);
-        setErroModelo(true);
-      },
-    );
+      setLoading(false);
+      if (onReady) onReady();
+    }).catch((error) => {
+      console.error("Erro ao carregar modelo GLTF:", error);
+      setLoading(false);
+      setErroModelo(true);
+    });
 
     // Animation Loop
     const clock = new THREE.Clock();
