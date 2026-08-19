@@ -70,6 +70,8 @@ pub fn run() {
             crate::comandos::instancia_sistema::remove_server,
             crate::comandos::instancia_sistema::delete_world,
             crate::comandos::instancia_sistema::abrir_pasta_mundo,
+            crate::comandos::instancia_sistema::get_instance_screenshots,
+            crate::comandos::instancia_sistema::delete_instance_screenshot,
             // Gerenciamento de logs
             crate::comandos::logs_instancia::get_log_files,
             crate::comandos::logs_instancia::get_log_content,

@@ -1,19 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from '../../iconesPixelados';
 import { cn } from '../../lib/utils';
+import { IndicadorStatusSocial } from './IndicadorStatusSocial';
+import type { StatusPresenca } from './tiposSocial';
 
 interface MenuStatusSocialProps {
     nome: string;
-    statusManual: 'online' | 'ausente';
+    statusManual: Exclude<StatusPresenca, 'offline'>;
     aparecerOffline: boolean;
     salvando: boolean;
-    onAtualizar: (status: 'online' | 'ausente', invisivel: boolean) => void;
-}
-
-function corPontoStatus(statusManual: 'online' | 'ausente', aparecerOffline: boolean): string {
-    if (aparecerOffline) return 'bg-white/35';
-    if (statusManual === 'ausente') return 'bg-amber-400';
-    return 'bg-emerald-400';
+    onAtualizar: (status: Exclude<StatusPresenca, 'offline'>, invisivel: boolean) => void;
 }
 
 export function MenuStatusSocial({
@@ -47,16 +43,20 @@ export function MenuStatusSocial({
                 aria-label="Alterar presença"
             >
                 <span className="truncate text-[17px] font-semibold leading-none text-white/95">{nome}</span>
-                <span className={cn('h-2 w-2 shrink-0 rounded-full', corPontoStatus(statusManual, aparecerOffline))} />
+                <IndicadorStatusSocial
+                    status={aparecerOffline ? 'offline' : statusManual}
+                    className="h-2.5 w-2.5"
+                />
                 <ChevronDown size={10} className={cn('shrink-0 text-white/30 transition-transform', aberto && 'rotate-180')} />
             </button>
 
             {aberto && (
                 <div className="absolute left-0 top-[calc(100%+8px)] z-30 w-36 border border-white/12 bg-[#101010] p-1 shadow-2xl">
                     {([
-                        { status: 'online' as const, invisivel: false, rotulo: 'Disponível', cor: 'bg-emerald-400' },
-                        { status: 'ausente' as const, invisivel: false, rotulo: 'Ausente', cor: 'bg-amber-400' },
-                        { status: statusManual, invisivel: true, rotulo: 'Invisível', cor: 'bg-white/35' },
+                        { status: 'online' as const, invisivel: false, rotulo: 'Disponível' },
+                        { status: 'ausente' as const, invisivel: false, rotulo: 'Ausente' },
+                        { status: 'ocupado' as const, invisivel: false, rotulo: 'Ocupado' },
+                        { status: statusManual, invisivel: true, rotulo: 'Invisível' },
                     ]).map((opcao) => {
                         const selecionada = opcao.invisivel
                             ? aparecerOffline
@@ -75,7 +75,10 @@ export function MenuStatusSocial({
                                     selecionada ? 'bg-white/[0.07] text-white' : 'text-white/55 hover:bg-white/[0.04] hover:text-white/80'
                                 )}
                             >
-                                <span className={cn('h-1.5 w-1.5 rounded-full', opcao.cor)} />
+                                <IndicadorStatusSocial
+                                    status={opcao.invisivel ? 'offline' : opcao.status}
+                                    className="h-2.5 w-2.5"
+                                />
                                 {opcao.rotulo}
                             </button>
                         );

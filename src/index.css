@@ -32,6 +32,8 @@
   --cor-acento-800: #065f46;
   --cor-acento-900: #064e3b;
   --cor-acento-rgb: 16, 185, 129;
+  --cor-favoritos: #83768e;
+  --cor-favoritos-rgb: 131, 118, 142;
   --mc-verde: var(--cor-acento-500);
   --mc-verde-hover: var(--cor-acento-400);
   --mc-vermelho: #d55656;
@@ -47,60 +49,25 @@
   --color-emerald-900: var(--cor-acento-900);
 }
 
-:root[data-cor-destaque="azul"] {
-  --cor-acento-50: #eff6ff;
-  --cor-acento-100: #dbeafe;
-  --cor-acento-200: #bfdbfe;
-  --cor-acento-300: #93c5fd;
-  --cor-acento-400: #60a5fa;
-  --cor-acento-500: #3b82f6;
-  --cor-acento-600: #2563eb;
-  --cor-acento-700: #1d4ed8;
-  --cor-acento-800: #1e40af;
-  --cor-acento-900: #1e3a8a;
-  --cor-acento-rgb: 59, 130, 246;
+.favoritos-texto {
+  color: var(--cor-favoritos);
 }
 
-:root[data-cor-destaque="laranja"] {
-  --cor-acento-50: #fff7ed;
-  --cor-acento-100: #ffedd5;
-  --cor-acento-200: #fed7aa;
-  --cor-acento-300: #fdba74;
-  --cor-acento-400: #fb923c;
-  --cor-acento-500: #f97316;
-  --cor-acento-600: #ea580c;
-  --cor-acento-700: #c2410c;
-  --cor-acento-800: #9a3412;
-  --cor-acento-900: #7c2d12;
-  --cor-acento-rgb: 249, 115, 22;
+.favoritos-fundo-suave {
+  background-color: rgba(var(--cor-favoritos-rgb), 0.12);
 }
 
-:root[data-cor-destaque="rosa"] {
-  --cor-acento-50: #fdf2f8;
-  --cor-acento-100: #fce7f3;
-  --cor-acento-200: #fbcfe8;
-  --cor-acento-300: #f9a8d4;
-  --cor-acento-400: #f472b6;
-  --cor-acento-500: #ec4899;
-  --cor-acento-600: #db2777;
-  --cor-acento-700: #be185d;
-  --cor-acento-800: #9d174d;
-  --cor-acento-900: #831843;
-  --cor-acento-rgb: 236, 72, 153;
+.favoritos-borda {
+  border-color: rgba(var(--cor-favoritos-rgb), 0.28);
 }
 
-:root[data-cor-destaque="ciano"] {
-  --cor-acento-50: #ecfeff;
-  --cor-acento-100: #cffafe;
-  --cor-acento-200: #a5f3fc;
-  --cor-acento-300: #67e8f9;
-  --cor-acento-400: #22d3ee;
-  --cor-acento-500: #06b6d4;
-  --cor-acento-600: #0891b2;
-  --cor-acento-700: #0e7490;
-  --cor-acento-800: #155e75;
-  --cor-acento-900: #164e63;
-  --cor-acento-rgb: 6, 182, 212;
+.favoritos-foco:focus {
+  --tw-ring-color: rgba(var(--cor-favoritos-rgb), 0.4);
+}
+
+.favoritos-selecionado {
+  color: white;
+  background-color: var(--cor-favoritos);
 }
 
 * {

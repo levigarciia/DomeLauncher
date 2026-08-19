@@ -109,11 +109,14 @@ pub(crate) async fn update_instance_name(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_instance_settings(
     state: State<'_, LauncherState>,
     instance_id: String,
     memory: Option<u32>,
+    usar_memoria_personalizada: Option<bool>,
     java_args: Option<String>,
+    usar_argumentos_jvm_personalizados: Option<bool>,
     mc_args: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
@@ -131,14 +134,27 @@ pub(crate) async fn update_instance_settings(
     let mut instance: Instance = serde_json::from_str(&content)
         .map_err(|e| format!("Erro ao parsear instance.json: {}", e))?;
 
-    if let Some(memoria) = memory {
-        if !(512..=65536).contains(&memoria) {
-            return Err("Memória da instância deve estar entre 512 e 65536 MB.".to_string());
+    if let Some(usar_memoria) = usar_memoria_personalizada {
+        if usar_memoria {
+            let memoria = memory.ok_or(
+                "Informe a memória da instância ao ativar a alocação personalizada.".to_string(),
+            )?;
+            if !(512..=65536).contains(&memoria) {
+                return Err("Memória da instância deve estar entre 512 e 65536 MB.".to_string());
+            }
+            instance.memory = Some(memoria);
+        } else {
+            instance.memory = None;
         }
-        instance.memory = Some(memoria);
     }
 
-    if let Some(java_args_valor) = java_args {
+    if let Some(usar_argumentos) = usar_argumentos_jvm_personalizados {
+        instance.java_args = if usar_argumentos {
+            Some(java_args.unwrap_or_default().trim().to_string())
+        } else {
+            None
+        };
+    } else if let Some(java_args_valor) = java_args {
         let texto = java_args_valor.trim();
         instance.java_args = if texto.is_empty() {
             None

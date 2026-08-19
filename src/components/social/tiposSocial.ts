@@ -12,7 +12,7 @@ export interface ContaMinecraftSocial {
   ultimoUsoEm?: string | null;
 }
 
-export type StatusPresenca = 'online' | 'ausente' | 'offline';
+export type StatusPresenca = 'online' | 'ausente' | 'ocupado' | 'offline';
 export type TipoAtividade = 'modpack_exato' | 'instancia_personalizada' | 'launcher';
 
 export interface AtividadeSocial {

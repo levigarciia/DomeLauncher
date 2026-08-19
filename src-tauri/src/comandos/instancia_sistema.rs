@@ -1,4 +1,5 @@
 use crate::launcher::{Instance, LauncherState};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -63,6 +64,123 @@ pub(crate) fn validar_caminho_dentro_raiz(
 
 pub(crate) fn nome_arquivo_valido_log(nome: &str) -> bool {
     nome.ends_with(".log") || nome.ends_with(".txt")
+}
+
+// ===== SCREENSHOTS DA INSTÂNCIA =====
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenshotInstancia {
+    pub nome: String,
+    pub data_url: String,
+    pub modificada_em: String,
+}
+
+fn extensao_screenshot_valida(caminho: &std::path::Path) -> bool {
+    caminho
+        .extension()
+        .and_then(|extensao| extensao.to_str())
+        .map(|extensao| {
+            matches!(
+                extensao.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn mime_screenshot(caminho: &std::path::Path) -> &'static str {
+    match caminho
+        .extension()
+        .and_then(|extensao| extensao.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+fn nome_arquivo_simples(nome: &str) -> bool {
+    let mut componentes = std::path::Path::new(nome).components();
+    matches!(componentes.next(), Some(std::path::Component::Normal(_)))
+        && componentes.next().is_none()
+        && !nome.is_empty()
+}
+
+#[tauri::command]
+pub fn get_instance_screenshots(
+    instance_id: String,
+    state: State<LauncherState>,
+) -> Result<Vec<ScreenshotInstancia>, String> {
+    let instancia = obter_instancia_por_id(&state, &instance_id)?;
+    let pasta_screenshots = instancia.path.join("screenshots");
+    if !pasta_screenshots.exists() {
+        return Ok(Vec::new());
+    }
+
+    let entradas = std::fs::read_dir(&pasta_screenshots)
+        .map_err(|e| format!("Erro ao ler screenshots da instância: {}", e))?;
+    let mut screenshots = entradas
+        .flatten()
+        .filter_map(|entrada| {
+            let caminho = entrada.path();
+            if !caminho.is_file() || !extensao_screenshot_valida(&caminho) {
+                return None;
+            }
+
+            let metadados = entrada.metadata().ok()?;
+            let modificada = metadados.modified().ok();
+            let bytes = std::fs::read(&caminho).ok()?;
+            let conteudo = base64::engine::general_purpose::STANDARD.encode(bytes);
+            let modificada_em = modificada
+                .map(chrono::DateTime::<chrono::Utc>::from)
+                .map(|data| data.to_rfc3339())
+                .unwrap_or_default();
+
+            Some((
+                modificada,
+                ScreenshotInstancia {
+                    nome: entrada.file_name().to_string_lossy().to_string(),
+                    data_url: format!("data:{};base64,{}", mime_screenshot(&caminho), conteudo),
+                    modificada_em,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    screenshots.sort_by(|(data_a, _), (data_b, _)| data_b.cmp(data_a));
+    Ok(screenshots
+        .into_iter()
+        .map(|(_, screenshot)| screenshot)
+        .collect())
+}
+
+#[tauri::command]
+pub fn delete_instance_screenshot(
+    instance_id: String,
+    nome: String,
+    state: State<LauncherState>,
+) -> Result<(), String> {
+    if !nome_arquivo_simples(&nome) || !extensao_screenshot_valida(std::path::Path::new(&nome)) {
+        return Err("Nome de screenshot inválido.".to_string());
+    }
+
+    let instancia = obter_instancia_por_id(&state, &instance_id)?;
+    let pasta_screenshots = instancia.path.join("screenshots");
+    let caminho = pasta_screenshots.join(&nome);
+    if !caminho.exists() {
+        return Ok(());
+    }
+
+    let caminho_validado = validar_caminho_dentro_raiz(&pasta_screenshots, &caminho)?;
+    if !caminho_validado.is_file() {
+        return Err("A screenshot informada não é um arquivo válido.".to_string());
+    }
+
+    std::fs::remove_file(caminho_validado).map_err(|e| format!("Erro ao excluir screenshot: {}", e))
 }
 
 // ===== FUNÇÕES DE MONITORAMENTO DO MINECRAFT =====
@@ -1005,7 +1123,7 @@ pub fn abrir_pasta_mundo(
 
 #[cfg(test)]
 mod testes {
-    use super::identificador_instancia_valido;
+    use super::{extensao_screenshot_valida, identificador_instancia_valido, nome_arquivo_simples};
 
     #[test]
     fn aceita_identificadores_simples() {
@@ -1020,5 +1138,18 @@ mod testes {
         assert!(!identificador_instancia_valido("C:\\Windows"));
         assert!(!identificador_instancia_valido(".."));
         assert!(!identificador_instancia_valido(""));
+    }
+
+    #[test]
+    fn valida_nomes_e_extensoes_de_screenshot() {
+        assert!(nome_arquivo_simples("2026-08-18_12.00.00.png"));
+        assert!(extensao_screenshot_valida(std::path::Path::new(
+            "foto.JPEG"
+        )));
+        assert!(!nome_arquivo_simples("../segredo.png"));
+        assert!(!nome_arquivo_simples("pasta/foto.png"));
+        assert!(!extensao_screenshot_valida(std::path::Path::new(
+            "foto.exe"
+        )));
     }
 }

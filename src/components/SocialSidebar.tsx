@@ -13,10 +13,12 @@ import {
   removeCreatingInstance,
 } from '../stores/creatingInstances';
 import { cn } from '../lib/utils';
+import { ChevronLeft, Gamepad2, User } from '../iconesPixelados';
 import { EsqueletoSocial } from './EsqueletoCarregamento';
 import { ListaAmigosAgrupada } from './social/ListaAmigosAgrupada';
 import { PainelChatSocial } from './social/PainelChatSocial';
 import { PerfilSocialPainel } from './social/PerfilSocialPainel';
+import { IndicadorStatusSocial } from './social/IndicadorStatusSocial';
 import type { PedidoTransferenciaInstancia } from './social/tiposSocial';
 
 interface ContaMinecraft {
@@ -33,7 +35,7 @@ interface ContaMinecraftSocial {
   ultimoUsoEm?: string | null;
 }
 
-type StatusPresenca = 'online' | 'ausente' | 'offline';
+type StatusPresenca = 'online' | 'ausente' | 'ocupado' | 'offline';
 type TipoAtividade = 'modpack_exato' | 'instancia_personalizada' | 'launcher';
 
 interface AtividadeSocial {
@@ -219,6 +221,8 @@ interface SocialSidebarProps {
   onFecharDrawer?: () => void;
   onAlterarChatAberto?: (aberto: boolean) => void;
   onAbrirAtividadeAmigo?: (amigo: AmigoSocial) => void;
+  recuado?: boolean;
+  onAlternarRecuo?: () => void;
 }
 
 const CHAVE_SESSAO_SOCIAL = 'dome:social:sessao';
@@ -310,12 +314,13 @@ function tempoRelativo(data: string | null | undefined): string {
 
 function rotuloStatus(status?: StatusPresenca): string {
   if (status === 'ausente') return 'Ausente';
+  if (status === 'ocupado') return 'Ocupado';
   if (status === 'offline') return 'Offline';
   return 'Online';
 }
 
 function statusEfetivo(status: StatusPresenca | undefined, online: boolean): StatusPresenca {
-  if (status === 'online' || status === 'ausente' || status === 'offline') {
+  if (status === 'online' || status === 'ausente' || status === 'ocupado' || status === 'offline') {
     return status;
   }
   return online ? 'online' : 'offline';
@@ -365,6 +370,8 @@ export default function SocialSidebar({
   onFecharDrawer,
   onAlterarChatAberto,
   onAbrirAtividadeAmigo,
+  recuado = false,
+  onAlternarRecuo,
 }: SocialSidebarProps) {
   const [sessao, setSessao] = useState<SessaoSocial | null>(null);
   const [perfil, setPerfil] = useState<PerfilSocial | null>(null);
@@ -376,7 +383,7 @@ export default function SocialSidebar({
   const [mensagemPerfil, setMensagemPerfil] = useState<string | null>(null);
   const [nomeSocialEditavel, setNomeSocialEditavel] = useState('');
   const [handleEditavel, setHandleEditavel] = useState('');
-  const [statusManual, setStatusManual] = useState<'online' | 'ausente'>('online');
+  const [statusManual, setStatusManual] = useState<Exclude<StatusPresenca, 'offline'>>('online');
   const [aparecerOffline, setAparecerOffline] = useState(false);
   const [salvandoStatus, setSalvandoStatus] = useState(false);
 
@@ -479,7 +486,7 @@ export default function SocialSidebar({
     () =>
       amigosFiltrados.filter((amigo) => {
         const status = statusEfetivo(amigo.status, amigo.online);
-        return status === 'online' || status === 'ausente';
+        return status === 'online' || status === 'ausente' || status === 'ocupado';
       }),
     [amigosFiltrados]
   );
@@ -504,7 +511,11 @@ export default function SocialSidebar({
     setPerfil(novaSessao?.perfil ?? null);
     salvarSessaoLocal(novaSessao);
     if (novaSessao?.perfil) {
-      setStatusManual(novaSessao.perfil.status === 'ausente' ? 'ausente' : 'online');
+      setStatusManual(
+        novaSessao.perfil.status === 'ausente' || novaSessao.perfil.status === 'ocupado'
+          ? novaSessao.perfil.status
+          : 'online'
+      );
       setAparecerOffline(Boolean(novaSessao.perfil.aparecerOffline));
     }
   }, []);
@@ -599,7 +610,11 @@ export default function SocialSidebar({
         accessToken: token,
       });
       setPerfil(perfilCarregado);
-      setStatusManual(perfilCarregado.status === 'ausente' ? 'ausente' : 'online');
+      setStatusManual(
+        perfilCarregado.status === 'ausente' || perfilCarregado.status === 'ocupado'
+          ? perfilCarregado.status
+          : 'online'
+      );
       setAparecerOffline(Boolean(perfilCarregado.aparecerOffline));
       setNomeSocialEditavel(perfilCarregado.nomeSocial ?? '');
       setHandleEditavel(perfilCarregado.handle ?? '');
@@ -712,7 +727,10 @@ export default function SocialSidebar({
     }
   }, [obterTokenValido]);
 
-  const atualizarStatusSocial = useCallback(async (proximoStatus: 'online' | 'ausente', invisivel: boolean) => {
+  const atualizarStatusSocial = useCallback(async (
+    proximoStatus: Exclude<StatusPresenca, 'offline'>,
+    invisivel: boolean
+  ) => {
     const token = await obterTokenValido();
     if (!token) return;
 
@@ -729,7 +747,11 @@ export default function SocialSidebar({
 
       if (resposta.perfil) {
         setPerfil(resposta.perfil);
-        setStatusManual(resposta.perfil.status === 'ausente' ? 'ausente' : 'online');
+        setStatusManual(
+          resposta.perfil.status === 'ausente' || resposta.perfil.status === 'ocupado'
+            ? resposta.perfil.status
+            : 'online'
+        );
         setAparecerOffline(Boolean(resposta.perfil.aparecerOffline));
       }
     } catch (erro) {
@@ -1645,6 +1667,131 @@ export default function SocialSidebar({
     );
   }
 
+  if (recuado) {
+    const statusPerfil: StatusPresenca = aparecerOffline ? 'offline' : statusManual;
+    const amigosJogando = amigosOnline.filter(
+      (amigo) => amigo.atividadeAtual && amigo.atividadeAtual.tipo !== 'launcher'
+    );
+    const urlAvatarPerfil = uuidAvatarMinecraft
+      ? `https://mc-heads.net/head/${uuidAvatarMinecraft}/64`
+      : perfil?.discordAvatar
+        ? `https://cdn.discordapp.com/avatars/${perfil.discordId}/${perfil.discordAvatar}.png?size=64`
+        : null;
+
+    const renderizarAvatarAmigo = (amigo: AmigoSocial) => (
+      <button
+        key={amigo.friendProfileId}
+        type="button"
+        onClick={() => abrirChatComAmigo(amigo.friendProfileId)}
+        title={`${amigo.nome} · ${rotuloStatus(amigo.status)}`}
+        aria-label={`Abrir conversa com ${amigo.nome}`}
+        aria-expanded={chatAberto && amigoSelecionadoPerfilId === amigo.friendProfileId}
+        className="relative grid h-9 w-9 place-items-center border border-white/[0.07] bg-white/[0.02] transition-colors hover:border-white/20 hover:bg-white/[0.05]"
+      >
+        {amigo.avatarUrl ? (
+          <img src={amigo.avatarUrl} alt="" className="h-7 w-7 object-contain" />
+        ) : (
+          <span className="text-[8px] font-black text-white/50">
+            {amigo.nome.trim().slice(0, 2).toUpperCase()}
+          </span>
+        )}
+        <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#101010]">
+          <IndicadorStatusSocial status={amigo.status ?? 'offline'} className="h-2.5 w-2.5" />
+        </span>
+      </button>
+    );
+
+    return (
+      <>
+      <aside className={cn('launcher-social shrink-0 overflow-y-auto scrollbar-hide', className)}>
+        <div className="flex w-full flex-col items-center gap-3">
+          <button
+            type="button"
+            onClick={onAlternarRecuo}
+            title="Abrir painel social"
+            aria-label="Abrir painel social"
+            className="grid h-8 w-8 place-items-center border border-white/10 bg-white/[0.025] text-white/45 transition-colors hover:border-white/20 hover:text-white"
+          >
+            <ChevronLeft size={13} />
+          </button>
+
+          <div
+            title={sessao ? nomeExibicaoAtual : 'Entrar no social'}
+            className="relative grid h-11 w-11 place-items-center border border-white/10 bg-[#151515]"
+          >
+            {urlAvatarPerfil ? (
+              <img src={urlAvatarPerfil} alt="" className="h-8 w-8 object-cover" />
+            ) : (
+              <User size={17} className="text-white/45" />
+            )}
+            {sessao && (
+              <span className="absolute -bottom-1 -right-1 grid h-4 w-4 place-items-center rounded-full bg-[#101010]">
+                <IndicadorStatusSocial status={statusPerfil} className="h-3 w-3" />
+              </span>
+            )}
+          </div>
+
+          {sessao && amigosJogando.length > 0 && (
+            <div className="flex w-full flex-col items-center gap-2 border-t border-white/[0.07] pt-3">
+              <Gamepad2 size={12} className="text-[#45A366]" />
+              {amigosJogando.slice(0, 4).map(renderizarAvatarAmigo)}
+              {amigosJogando.length > 4 && (
+                <span className="text-[8px] font-black text-white/30">+{amigosJogando.length - 4}</span>
+              )}
+            </div>
+          )}
+
+          {sessao && amigosOffline.length > 0 && (
+            <div className="flex w-full flex-col items-center gap-2 border-t border-white/[0.07] pt-3">
+              <IndicadorStatusSocial status="offline" className="h-3 w-3" />
+              {amigosOffline.slice(0, 4).map(renderizarAvatarAmigo)}
+              {amigosOffline.length > 4 && (
+                <span className="text-[8px] font-black text-white/30">+{amigosOffline.length - 4}</span>
+              )}
+            </div>
+          )}
+        </div>
+      </aside>
+      <PainelChatSocial
+        aberto={chatAberto}
+        recuado
+        amigoSelecionado={amigoSelecionado}
+        perfilIdAtual={perfil?.perfilId}
+        mensagens={mensagensChat}
+        carregandoChat={carregandoChat}
+        enviandoChat={enviandoChat}
+        erroChat={erroChat}
+        textoChat={textoChat}
+        processandoAtividade={processandoAtividade}
+        mensagemSync={mensagemSync}
+        onFechar={() => setChatAberto(false)}
+        onAlterarTexto={setTextoChat}
+        onEnviarMensagem={enviarMensagemChat}
+        onPressionarEnter={aoPressionarEnterMensagem}
+        onRemoverAmigo={(friendProfileId) => void removerAmigo(friendProfileId)}
+        onInstalarAtividade={async (friendProfileId, atividade) => {
+          setProcessandoAtividade(true);
+          try {
+            await instalarMesmaInstanciaPorAtividade(friendProfileId, atividade ?? null);
+          } finally {
+            setProcessandoAtividade(false);
+          }
+        }}
+        onSolicitarSync={async (friendProfileId, atividade) => {
+          setProcessandoAtividade(true);
+          try {
+            await solicitarSyncInstancia(friendProfileId, atividade ?? null);
+          } finally {
+            setProcessandoAtividade(false);
+          }
+        }}
+        formatarTempoRelativo={tempoRelativo}
+        rotuloStatus={rotuloStatus}
+      />
+      </>
+    );
+  }
+
   return (
     <aside className={cn('launcher-social w-[311px] shrink-0 overflow-y-auto scrollbar-hide', className)}>
       <div className="flex w-full flex-col gap-3">
@@ -1682,6 +1829,7 @@ export default function SocialSidebar({
           onAlterarNome={setNomeSocialEditavel}
           onAlterarHandle={setHandleEditavel}
           onAtualizarStatus={atualizarStatusSocial}
+          onRecuar={onAlternarRecuo}
         />
 
         <ListaAmigosAgrupada

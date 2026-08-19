@@ -211,7 +211,7 @@ async fn launch_instance_com_opcoes(
     // 5. Montar Argumentos (respeitar config da instância ou global)
     let mut args = Vec::new();
 
-    let ram_mb = settings.ram_mb;
+    let ram_mb = instance.memory.unwrap_or(settings.ram_mb);
     args.push(format!("-Xmx{}M", ram_mb));
     args.push(format!("-Xms{}M", (ram_mb / 2).max(512)));
 

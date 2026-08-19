@@ -14,6 +14,7 @@ import { EsqueletoAba } from "./EsqueletoCarregamento";
 import { addFavorite, removeFavorite, isFavorite, type FavoriteItem } from "./Favorites";
 import type { ProjetoConteudo, TipoProjetoConteudo } from "./ProjetoDetalheModal";
 import { invoke } from "@tauri-apps/api/core";
+import { obterImagemProjeto } from "../lib/imagemProjeto";
 
 type ContentType = "modpack" | "mod" | "resourcepack" | "shader";
 type Source = "modrinth" | "curseforge";
@@ -271,14 +272,14 @@ export default function Explore({
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+        <div className="flex min-w-0 flex-wrap items-center gap-4">
+          <div className="custom-scrollbar flex max-w-full overflow-x-auto rounded-xl border border-white/10 bg-white/5 p-1">
             {CONTENT_TYPES.map((type) => (
               <button
                 key={type.id}
                 onClick={() => setContentType(type.id)}
                 className={cn(
-                  "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5",
+                  "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all",
                   contentType === type.id
                     ? "bg-emerald-500 text-black"
                     : "text-white/40 hover:text-white"
@@ -292,7 +293,7 @@ export default function Explore({
 
           <div className="flex-1" />
 
-          <div className="flex bg-white/5 p-1 rounded-xl border border-white/10">
+          <div className="flex shrink-0 rounded-xl border border-white/10 bg-white/5 p-1">
             <button
               onClick={() => setSource("modrinth")}
               className={cn(
@@ -324,7 +325,7 @@ export default function Explore({
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+            className="grid grid-cols-1 gap-6 lg:grid-cols-2 2xl:grid-cols-3"
           >
           {results.map((item, index) => (
             <motion.div
@@ -332,7 +333,7 @@ export default function Explore({
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.03 }}
-              className="bg-white/5 border border-white/5 hover:border-white/20 rounded-3xl p-5 transition-all group flex flex-col gap-4 cursor-pointer"
+              className="group flex min-w-0 cursor-pointer flex-col gap-4 overflow-hidden rounded-3xl border border-white/5 bg-white/5 p-5 transition-all hover:border-white/20"
               onClick={() => abrirDetalheProjeto(item)}
               onMouseEnter={() =>
                 onAtualizarPresencaExplore?.({
@@ -348,18 +349,19 @@ export default function Explore({
                 })
               }
             >
-              <div className="flex gap-4">
+              <div className="flex min-w-0 gap-4">
                 <img
-                  src={item.icon_url || `https://api.dicebear.com/9.x/shapes/svg?seed=${item.id}`}
+                  src={obterImagemProjeto(item.icon_url, item.project_type, item.id)}
                   alt={item.title}
-                  className="w-16 h-16 rounded-2xl bg-black/40 object-cover"
+                  className="h-16 w-16 shrink-0 rounded-2xl bg-black/40 object-cover"
                 />
                 <div className="flex-1 min-w-0">
                   <h3 className="font-bold text-lg truncate group-hover:text-emerald-400 transition-colors">
                     {item.title}
                   </h3>
-                  <p className="text-xs text-white/40 mb-2 items-center flex gap-1">
-                    por <span className="text-white/60 font-medium">{item.author}</span>
+                  <p className="mb-2 flex min-w-0 items-center gap-1 text-xs text-white/40">
+                    <span className="shrink-0">por</span>
+                    <span className="truncate font-medium text-white/60">{item.author}</span>
                   </p>
                   <div className="flex gap-2">
                     <span className="bg-emerald-500/10 text-emerald-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/20 uppercase">
@@ -373,8 +375,8 @@ export default function Explore({
                 {item.description}
               </p>
 
-              <div className="mt-auto pt-4 flex items-center justify-between border-t border-white/5">
-                <div className="flex gap-4 text-white/40">
+              <div className="mt-auto flex flex-wrap items-center gap-3 border-t border-white/5 pt-4">
+                <div className="flex shrink-0 gap-4 text-white/40">
                   <div className="flex items-center gap-1 text-[10px] font-bold">
                     <Download size={12} />
                     {(() => {
@@ -395,7 +397,7 @@ export default function Explore({
                   </div>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="ml-auto flex shrink-0 gap-2">
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -404,7 +406,7 @@ export default function Explore({
                     className={cn(
                       "p-2 rounded-xl transition-all",
                       favorites.has(item.id)
-                        ? "bg-pink-500/20 text-pink-400"
+                        ? "favoritos-fundo-suave favoritos-texto"
                         : "bg-white/5 hover:bg-white/10 text-white/40"
                     )}
                   >
