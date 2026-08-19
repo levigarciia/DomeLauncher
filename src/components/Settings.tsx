@@ -15,23 +15,16 @@ import {
   Terminal,
   Sparkles,
   Shield,
+  FolderOpen,
   X,
 } from "../iconesPixelados";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import { EsqueletoAba } from "./EsqueletoCarregamento";
+import { ehCorHexValida, normalizarCorDestaque } from "../lib/corDestaque";
 
 // Tipos
-type CorDestaque = "verde" | "azul" | "laranja" | "rosa" | "ciano";
-
-function normalizarCorDestaque(valor: unknown): CorDestaque {
-  const texto = String(valor || "").toLowerCase().trim();
-  if (texto === "azul" || texto === "laranja" || texto === "rosa" || texto === "ciano") {
-    return texto;
-  }
-  return "verde";
-}
-
 interface GlobalSettings {
   ram_mb: number;
   java_path: string | null;
@@ -42,7 +35,8 @@ interface GlobalSettings {
   close_on_launch: boolean;
   show_snapshots: boolean;
   discord_rpc_ativo: boolean;
-  cor_destaque: CorDestaque;
+  cor_destaque: string;
+  instances_path: string;
 }
 
 interface JavaInfo {
@@ -83,17 +77,12 @@ const JVM_PRESETS = [
   },
 ];
 
-const OPCOES_COR_DESTAQUE: Array<{
-  id: CorDestaque;
-  nome: string;
-  cor: string;
-}> = [
-  { id: "verde", nome: "Verde", cor: "#34d399" },
-  { id: "azul", nome: "Azul", cor: "#60a5fa" },
-  { id: "laranja", nome: "Laranja", cor: "#fb923c" },
-  { id: "rosa", nome: "Rosa", cor: "#f472b6" },
-  { id: "ciano", nome: "Ciano", cor: "#22d3ee" },
-];
+const CORES_DESTAQUE_PREDEFINIDAS = [
+  { nome: "Azul", codigo: "#3B82F6" },
+  { nome: "Vermelho", codigo: "#EF4444" },
+  { nome: "Verde", codigo: "#10B981" },
+  { nome: "Amarelo", codigo: "#EAB308" },
+] as const;
 
 export default function Settings() {
   const [settings, setSettings] = useState<GlobalSettings>({
@@ -106,7 +95,8 @@ export default function Settings() {
     close_on_launch: false,
     show_snapshots: false,
     discord_rpc_ativo: true,
-    cor_destaque: "verde",
+    cor_destaque: "#10B981",
+    instances_path: "",
   });
 
   const [javas, setJavas] = useState<JavaInfo[]>([]);
@@ -117,9 +107,13 @@ export default function Settings() {
   const [erro, setErro] = useState<string | null>(null);
   const [jvmAberto, setJvmAberto] = useState(false);
   const [javaAberto, setJavaAberto] = useState(true);
+  const [codigoCor, setCodigoCor] = useState("#10B981");
+  const [selecionandoPasta, setSelecionandoPasta] = useState(false);
+  const [reiniciando, setReiniciando] = useState(false);
   const ignorarPrimeiraPersistencia = useRef(true);
   const configuracoesAtuais = useRef(settings);
   const alteracoesPendentes = useRef(false);
+  const caminhoInstanciasInicial = useRef("");
 
   // Carregar configurações e dados
   useEffect(() => {
@@ -137,8 +131,10 @@ export default function Settings() {
         ...cfg,
         cor_destaque: normalizarCorDestaque(cfg?.cor_destaque),
       };
+      caminhoInstanciasInicial.current = configuracoesCarregadas.instances_path;
       configuracoesAtuais.current = configuracoesCarregadas;
       setSettings(configuracoesCarregadas);
+      setCodigoCor(configuracoesCarregadas.cor_destaque);
       setSystemRam(ram);
       detectarJavas();
     } catch (e) {
@@ -200,8 +196,10 @@ export default function Settings() {
           detail: { cor: configuracoes.cor_destaque },
         })
       );
+      return true;
     } catch (e: unknown) {
       if (mostrarErro) setErro(`Erro ao salvar: ${e}`);
+      return false;
     }
   }, []);
 
@@ -231,6 +229,45 @@ export default function Settings() {
   const resolucaoAtual = RESOLUTIONS.find(
     (r) => r.w === settings.width && r.h === settings.height
   );
+  const reinicioNecessario = settings.instances_path !== caminhoInstanciasInicial.current;
+  const codigoCorValido = ehCorHexValida(codigoCor);
+
+  const selecionarPastaInstancias = async () => {
+    setSelecionandoPasta(true);
+    try {
+      const caminho = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: settings.instances_path || undefined,
+        title: "Escolher pasta de instâncias do Minecraft",
+      });
+      if (typeof caminho === "string") {
+        atualizarConfig("instances_path", caminho);
+      }
+    } catch (e: unknown) {
+      setErro(`Não foi possível selecionar a pasta: ${e}`);
+    } finally {
+      setSelecionandoPasta(false);
+    }
+  };
+
+  const atualizarCodigoCor = (valor: string) => {
+    const codigo = valor.trim().toUpperCase();
+    setCodigoCor(codigo);
+    if (ehCorHexValida(codigo)) {
+      atualizarConfig("cor_destaque", codigo);
+    }
+  };
+
+  const reiniciarParaAplicarPasta = async () => {
+    setReiniciando(true);
+    const salvou = await persistirConfiguracoes(configuracoesAtuais.current, true);
+    if (salvou) {
+      await invoke("reiniciar_aplicativo");
+      return;
+    }
+    setReiniciando(false);
+  };
 
   if (carregando) {
     return <EsqueletoAba />;
@@ -260,14 +297,14 @@ export default function Settings() {
       <Secao
         icone={<Cpu className="text-emerald-400" size={20} />}
         titulo="Desempenho"
-        descricao="Configurações de memória RAM e JVM"
+        descricao="Memória padrão dos modpacks e configurações da JVM"
       >
         {/* RAM Slider */}
         <div className="space-y-3">
           <div className="flex justify-between items-center">
             <label className="text-sm font-medium text-white/60 flex items-center gap-2">
               <HardDrive size={14} />
-              Memória RAM Alocada
+              Memória RAM padrão dos modpacks
             </label>
             <div className="flex items-center gap-2">
               <span className="text-emerald-400 font-bold text-lg tabular-nums">
@@ -278,6 +315,10 @@ export default function Settings() {
               </span>
             </div>
           </div>
+
+          <p className="text-[11px] leading-relaxed text-white/35">
+            Este valor é usado por todos os modpacks que estiverem com a alocação própria desativada.
+          </p>
 
           {/* Barra visual personalizada */}
           <div className="relative">
@@ -610,27 +651,106 @@ export default function Settings() {
         <div className="space-y-2">
           <p className="text-sm font-medium">Cor de destaque</p>
           <p className="text-xs text-white/30">
-            Essa cor será aplicada nos destaques principais do launcher.
+            Escolha uma cor pronta ou informe um código hexadecimal personalizado.
           </p>
-          <div className="flex flex-wrap gap-2">
-            {OPCOES_COR_DESTAQUE.map((opcao) => (
-              <button
-                key={opcao.id}
-                onClick={() => atualizarConfig("cor_destaque", opcao.id)}
-                className={`flex items-center gap-2 px-2.5 py-1.5 border text-xs font-bold transition-all ${
-                  settings.cor_destaque === opcao.id
-                    ? "bg-white/10 border-white/30 text-white"
-                    : "bg-white/3 border-white/10 text-white/65 hover:bg-white/6 hover:text-white"
-                }`}
-              >
-                <span
-                  className="h-3 w-3 border border-white/25"
-                  style={{ backgroundColor: opcao.cor }}
-                />
-                {opcao.nome}
-              </button>
-            ))}
+          <div className="grid max-w-md grid-cols-2 gap-2 sm:grid-cols-4">
+            {CORES_DESTAQUE_PREDEFINIDAS.map((cor) => {
+              const selecionada = settings.cor_destaque === cor.codigo;
+              return (
+                <button
+                  type="button"
+                  key={cor.codigo}
+                  onClick={() => atualizarCodigoCor(cor.codigo)}
+                  aria-pressed={selecionada}
+                  className={`flex items-center gap-2 border px-2.5 py-2 text-[10px] font-bold transition-colors ${
+                    selecionada
+                      ? "border-white/30 bg-white/10 text-white"
+                      : "border-white/8 bg-white/[0.03] text-white/45 hover:border-white/20 hover:text-white/75"
+                  }`}
+                >
+                  <span
+                    className="h-4 w-4 shrink-0 border border-white/20"
+                    style={{ backgroundColor: cor.codigo }}
+                  />
+                  <span className="truncate">{cor.nome}</span>
+                </button>
+              );
+            })}
           </div>
+          <div className="flex max-w-xs items-center border border-white/10 bg-black/20 p-1.5 focus-within:border-emerald-400/45">
+            <label
+              className="relative h-8 w-8 shrink-0 cursor-pointer border border-white/20 transition-all hover:border-white/45 focus-within:ring-2 focus-within:ring-emerald-400/45"
+              title="Abrir seletor de cores"
+            >
+              <span
+                className="absolute inset-0"
+                style={{ backgroundColor: codigoCorValido ? codigoCor : settings.cor_destaque }}
+              />
+              <input
+                type="color"
+                value={codigoCorValido ? codigoCor : settings.cor_destaque}
+                onChange={(evento) => atualizarCodigoCor(evento.target.value)}
+                aria-label="Selecionar cor de destaque"
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              />
+            </label>
+            <input
+              type="text"
+              value={codigoCor}
+              onChange={(evento) => atualizarCodigoCor(evento.target.value)}
+              onBlur={() => setCodigoCor(normalizarCorDestaque(settings.cor_destaque))}
+              maxLength={7}
+              spellCheck={false}
+              aria-label="Código hexadecimal da cor de destaque"
+              className="min-w-0 flex-1 bg-transparent px-3 font-mono text-sm font-bold uppercase tracking-[0.12em] text-white outline-none"
+              placeholder="#10B981"
+            />
+            <span className={`px-2 text-[9px] font-black uppercase tracking-wider ${
+              codigoCorValido ? "text-emerald-300/65" : "text-red-400"
+            }`}>
+              {codigoCorValido ? "Hex" : "Inválido"}
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-2 border-t border-white/5 pt-4">
+          <p className="text-sm font-medium">Pasta de instâncias</p>
+          <p className="text-xs text-white/30">
+            O launcher detectará e criará instâncias diretamente nesta pasta. Arquivos existentes não serão movidos.
+          </p>
+          <div className="flex items-stretch gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 border border-white/10 bg-black/20 px-3">
+              <FolderOpen size={15} className="shrink-0 text-emerald-300/70" />
+              <span className="truncate font-mono text-[11px] text-white/60" title={settings.instances_path}>
+                {settings.instances_path}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={selecionarPastaInstancias}
+              disabled={selecionandoPasta}
+              className="flex items-center gap-2 border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/70 transition-colors hover:border-emerald-400/30 hover:text-emerald-200 disabled:cursor-wait disabled:opacity-50"
+            >
+              {selecionandoPasta ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+              Escolher pasta
+            </button>
+          </div>
+          {reinicioNecessario && (
+            <div className="flex items-center justify-between gap-4 border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2.5">
+              <p className="text-[11px] leading-relaxed text-amber-100/65">
+                Reinicie o launcher para detectar as instâncias no novo local.
+              </p>
+              <button
+                type="button"
+                onClick={reiniciarParaAplicarPasta}
+                disabled={reiniciando}
+                className="flex shrink-0 items-center gap-2 bg-amber-300 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#171208] transition-colors hover:bg-amber-200 disabled:cursor-wait disabled:opacity-60"
+              >
+                {reiniciando ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                Reiniciar agora
+              </button>
+            </div>
+          )}
         </div>
 
         <ToggleItem
@@ -672,18 +792,44 @@ function Secao({
   descricao: string;
   children: React.ReactNode;
 }) {
+  const [aberta, setAberta] = useState(false);
+
   return (
-    <section>
-      <div className="flex items-center gap-3 mb-3">
-        {icone}
-        <div>
+    <section className="overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setAberta((valor) => !valor)}
+        aria-expanded={aberta}
+        className="flex w-full items-center gap-3 px-5 py-4 text-left transition-colors hover:bg-white/[0.025]"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.04]">
+          {icone}
+        </span>
+        <div className="min-w-0 flex-1">
           <h3 className="text-base font-bold">{titulo}</h3>
-          <p className="text-[11px] text-white/25">{descricao}</p>
+          <p className="truncate text-[11px] text-white/25">{descricao}</p>
         </div>
-      </div>
-      <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-5 space-y-4">
-        {children}
-      </div>
+        <motion.span
+          animate={{ rotate: aberta ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="text-white/30"
+        >
+          <ChevronDown size={17} />
+        </motion.span>
+      </button>
+      <AnimatePresence initial={false}>
+        {aberta && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-4 border-t border-white/5 p-5">{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   );
 }

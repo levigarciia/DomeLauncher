@@ -13,6 +13,7 @@ import {
   Loader2,
 } from "../iconesPixelados";
 import { cn } from "../lib/utils";
+import { obterImagemProjeto } from "../lib/imagemProjeto";
 import type { Instance } from "../hooks/useLauncher";
 import {
   addCreatingInstance,
@@ -714,7 +715,11 @@ export default function ProjetoDetalheModal({
           status: "downloading",
           progress: 0,
           message: "Preparando instalação do modpack...",
-          icon: projetoExibicao.icon_url || "/dome.svg",
+          icon: obterImagemProjeto(
+            projetoExibicao.icon_url,
+            projetoExibicao.project_type,
+            projetoExibicao.id,
+          ),
         };
         addCreatingInstance(criandoInstancia);
 
@@ -919,10 +924,11 @@ export default function ProjetoDetalheModal({
         <div className="border-b border-white/10 p-5">
           <div className="flex items-start gap-4">
             <img
-              src={
-                projetoExibicao.icon_url ||
-                `https://api.dicebear.com/9.x/shapes/svg?seed=${projetoExibicao.id}`
-              }
+              src={obterImagemProjeto(
+                projetoExibicao.icon_url,
+                projetoExibicao.project_type,
+                projetoExibicao.id,
+              )}
               alt={projetoExibicao.title}
               className="h-20 w-20 rounded-xl border border-white/15 bg-black/30 object-cover"
             />

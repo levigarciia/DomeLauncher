@@ -216,7 +216,6 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
   const skinTextureRef = useRef<THREE.Texture | null>(null);
   const capeTextureRef = useRef<THREE.Texture | null>(null);
-  const lastCapeSrcRef = useRef<string | undefined>(undefined);
   const transparentTextureRef = useRef<THREE.Texture | null>(null);
 
   if (!transparentTextureRef.current) {
@@ -229,6 +228,12 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     if (!mountRef.current || !containerRef.current) return;
     setLoading(true);
     setErroModelo(false);
+    modelRef.current = null;
+    mixerRef.current = null;
+    actionsRef.current = {};
+    activeActionRef.current = null;
+
+    let descartado = false;
 
     const initialWidth = containerRef.current.clientWidth || width || 300;
     const initialHeight = containerRef.current.clientHeight || height || 400;
@@ -243,7 +248,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setSize(initialWidth, initialHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     while (mountRef.current.firstChild) {
@@ -251,6 +256,14 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     }
     mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
+
+    const tratarPerdaContexto = (evento: Event) => {
+      evento.preventDefault();
+      if (descartado) return;
+      setLoading(false);
+      setErroModelo(true);
+    };
+    renderer.domElement.addEventListener("webglcontextlost", tratarPerdaContexto);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.set(0, 1.0, 0);
@@ -271,7 +284,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     scene.add(ambientLight);
 
     const resizeObserver = new ResizeObserver(() => {
-      if (!containerRef.current || !rendererRef.current) return;
+      if (!containerRef.current || descartado) return;
       const newWidth = containerRef.current.clientWidth;
       const newHeight = containerRef.current.clientHeight;
 
@@ -279,7 +292,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
       camera.aspect = newWidth / newHeight;
       camera.updateProjectionMatrix();
-      rendererRef.current.setSize(newWidth, newHeight);
+      renderer.setSize(newWidth, newHeight);
     });
     resizeObserver.observe(containerRef.current);
 
@@ -287,6 +300,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
 
     parsearModelo(modelRaw)
       .then((gltf) => {
+        if (descartado) return;
         const object = clonarCenaModelo(gltf.scene);
 
         object.position.x = 0;
@@ -316,6 +330,7 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
         if (onReady) onReady();
       })
       .catch((error) => {
+        if (descartado) return;
         console.error("Erro ao carregar modelo GLTF:", error);
         setLoading(false);
         setErroModelo(true);
@@ -334,17 +349,21 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
     animate();
 
     return () => {
+      descartado = true;
       resizeObserver.disconnect();
       cancelAnimationFrame(animationId);
-      if (rendererRef.current) {
-        rendererRef.current.dispose();
-        if (
-          mountRef.current &&
-          rendererRef.current.domElement.parentNode === mountRef.current
-        ) {
-          mountRef.current.removeChild(rendererRef.current.domElement);
-        }
+      controls.dispose();
+      renderer.domElement.removeEventListener("webglcontextlost", tratarPerdaContexto);
+      renderer.dispose();
+      renderer.forceContextLoss();
+      if (renderer.domElement.parentNode) {
+        renderer.domElement.parentNode.removeChild(renderer.domElement);
       }
+      if (rendererRef.current === renderer) rendererRef.current = null;
+      modelRef.current = null;
+      mixerRef.current = null;
+      actionsRef.current = {};
+      activeActionRef.current = null;
     };
   }, [model, tentativa]);
 
@@ -401,46 +420,54 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
   useEffect(() => {
     if (!skinUrl) return;
 
+    let descartada = false;
     const textureLoader = new THREE.TextureLoader();
     textureLoader.load(
       skinUrl,
       (texture) => {
+        if (descartada) {
+          texture.dispose();
+          return;
+        }
         texture.magFilter = THREE.NearestFilter;
         texture.minFilter = THREE.NearestFilter;
         texture.colorSpace = THREE.SRGBColorSpace;
         texture.flipY = false;
 
+        skinTextureRef.current?.dispose();
         skinTextureRef.current = texture;
 
         if (modelRef.current) {
           applyTexture(modelRef.current, texture);
         }
-
-        if (!loading) {
-          playAnimation("interact", true);
-        }
       },
       undefined,
       (err) => console.error("Erro ao carregar textura da skin:", err),
     );
-  }, [skinUrl, loading]);
+
+    return () => {
+      descartada = true;
+    };
+  }, [skinUrl]);
 
   // Load Cape Texture
   useEffect(() => {
-    if (capeUrl === lastCapeSrcRef.current) return;
-
-    lastCapeSrcRef.current = capeUrl;
-
     if (capeUrl) {
+      let descartada = false;
       const textureLoader = new THREE.TextureLoader();
       textureLoader.load(
         capeUrl,
         (texture) => {
+          if (descartada) {
+            texture.dispose();
+            return;
+          }
           texture.magFilter = THREE.NearestFilter;
           texture.minFilter = THREE.NearestFilter;
           texture.colorSpace = THREE.SRGBColorSpace;
           texture.flipY = false;
 
+          capeTextureRef.current?.dispose();
           capeTextureRef.current = texture;
 
           if (modelRef.current) {
@@ -450,13 +477,25 @@ export const SkinPreviewRenderer: React.FC<SkinPreviewRendererProps> = ({
         undefined,
         (err) => console.error("Erro ao carregar textura da capa:", err),
       );
+
+      return () => {
+        descartada = true;
+      };
     } else {
+      capeTextureRef.current?.dispose();
       capeTextureRef.current = null;
       if (modelRef.current) {
         applyCapeTexture(modelRef.current, null, transparentTexture);
       }
     }
   }, [capeUrl]);
+
+  useEffect(() => {
+    return () => {
+      skinTextureRef.current?.dispose();
+      capeTextureRef.current?.dispose();
+    };
+  }, []);
 
   const handleCanvasClick = () => {
     playAnimation("interact", true);

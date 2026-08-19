@@ -12,6 +12,7 @@ import {
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "../lib/utils";
 import type { ProjetoConteudo } from "./ProjetoDetalheModal";
+import { obterImagemProjeto } from "../lib/imagemProjeto";
 
 export interface FavoriteItem {
   id: string;
@@ -162,8 +163,8 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
     <div className="space-y-6">
       {/* Cabeçalho */}
       <div className="flex items-center gap-3 mb-2">
-        <div className="p-3 bg-pink-500/10 rounded-2xl border border-pink-500/20">
-          <Heart className="text-pink-500" size={24} />
+        <div className="favoritos-fundo-suave favoritos-borda rounded-2xl border p-3">
+          <Heart className="favoritos-texto" size={24} />
         </div>
         <div className="flex-1">
           <p className="text-xs uppercase tracking-wider text-white/35 font-bold">
@@ -185,7 +186,7 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
             placeholder="Buscar nos favoritos..."
-            className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500/40 transition-all"
+            className="favoritos-foco w-full rounded-2xl border border-white/10 bg-white/5 py-3 pl-11 pr-4 text-sm transition-all focus:outline-none focus:ring-2"
           />
         </div>
 
@@ -200,7 +201,7 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
                 className={cn(
                   "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5",
                   filtroTipo === filtro.id
-                    ? "bg-pink-500 text-white"
+                    ? "favoritos-selecionado"
                     : "text-white/40 hover:text-white"
                 )}
               >
@@ -300,7 +301,7 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
                 >
                   <div className="flex gap-4">
                     <img
-                      src={item.icon_url || `https://api.dicebear.com/9.x/shapes/svg?seed=${item.id}`}
+                      src={obterImagemProjeto(item.icon_url, item.type, item.id)}
                       alt={item.title}
                       className="w-14 h-14 rounded-xl bg-black/40 object-cover shrink-0"
                     />

@@ -17,6 +17,7 @@ import type { Instance } from "../hooks/useLauncher";
 import type { MinecraftAccount } from "../App";
 import { cn } from "../lib/utils";
 import type { ProjetoConteudo, TipoProjetoConteudo } from "./ProjetoDetalheModal";
+import { obterImagemProjeto } from "../lib/imagemProjeto";
 
 interface ResultadoBuscaApi {
   project_id: string;
@@ -918,7 +919,7 @@ function SecaoDestaque({
               <div className="flex items-center gap-3">
                 <div className="h-10 w-10 overflow-hidden bg-black/30">
                   <img
-                    src={item.icon_url || `https://api.dicebear.com/9.x/shapes/svg?seed=${item.id}`}
+                    src={obterImagemProjeto(item.icon_url, item.project_type, item.id)}
                     alt={item.title}
                     className="h-full w-full object-cover"
                   />

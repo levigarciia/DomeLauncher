@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Play,
-  Settings,
   ArrowLeft,
   Search,
   Plus,
@@ -28,6 +27,9 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "../lib/utils";
+import { ICONE_DOME_LAUNCHER } from "../lib/imagemProjeto";
+import Configuracao from "../pages/instance/Configuracao";
+import Screenshots, { ScreenshotInstancia } from "../pages/instance/Screenshots";
 
 interface InstanceManagerProps {
   instanceId: string;
@@ -50,6 +52,7 @@ interface InstanceDetails {
   created?: string;
   javaArgs?: string;
   mcArgs?: string;
+  memory?: number | null;
   width?: number;
   height?: number;
 }
@@ -113,7 +116,7 @@ interface ConfiguracoesGlobais {
   close_on_launch?: boolean;
 }
 
-type ContentTab = "content" | "worlds" | "logs";
+type ContentTab = "content" | "worlds" | "configuration" | "screenshots" | "logs";
 type ContentFilter = "mods" | "resourcepacks" | "shaders";
 type ViewMode = "installed" | "browse";
 type BrowseSource = "modrinth" | "curseforge";
@@ -294,10 +297,11 @@ export default function InstanceManager({
   const [searching, setSearching] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
   const [worlds, setWorlds] = useState<WorldInfo[]>([]);
+  const [screenshots, setScreenshots] = useState<ScreenshotInstancia[]>([]);
+  const [carregandoScreenshots, setCarregandoScreenshots] = useState(false);
   const [logs, setLogs] = useState<LogFile[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [updatingAll, setUpdatingAll] = useState(false);
   const [modoSelecaoLote, setModoSelecaoLote] = useState(false);
@@ -312,9 +316,6 @@ export default function InstanceManager({
   // Estados para edição
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
-  const [editJavaArgs, setEditJavaArgs] = useState("");
-  const [editWidth, setEditWidth] = useState("");
-  const [editHeight, setEditHeight] = useState("");
   const [saving, setSaving] = useState(false);
 
   const lastSearch = useRef({ query: "", filter: "", source: "" });
@@ -326,11 +327,15 @@ export default function InstanceManager({
   } | null>(null);
 
   useEffect(() => {
+    setActiveTab("content");
+    setActiveFilter("mods");
+    setViewMode("installed");
     loadInstanceDetails();
   }, [instanceId]);
 
   useEffect(() => {
     if (activeTab === "worlds") loadWorlds();
+    if (activeTab === "screenshots") loadScreenshots();
     if (activeTab === "logs") loadLogs();
   }, [activeTab]);
 
@@ -380,9 +385,6 @@ export default function InstanceManager({
       setInstanceDetails(details);
       // Preencher campos de edição
       setEditName(details.name);
-      setEditJavaArgs(details.javaArgs || "");
-      setEditWidth(details.width?.toString() || "854");
-      setEditHeight(details.height?.toString() || "480");
     } catch (error) {
       console.error("Erro ao carregar detalhes:", error);
     }
@@ -874,6 +876,38 @@ export default function InstanceManager({
     } catch (error) {
       console.error("Erro ao carregar logs:", error);
       setLogs([]);
+    }
+  };
+
+  const loadScreenshots = async () => {
+    setCarregandoScreenshots(true);
+    try {
+      const lista = await invoke<ScreenshotInstancia[]>("get_instance_screenshots", {
+        instanceId,
+      });
+      setScreenshots(lista);
+    } catch (error) {
+      console.error("Erro ao carregar screenshots:", error);
+      setScreenshots([]);
+    } finally {
+      setCarregandoScreenshots(false);
+    }
+  };
+
+  const excluirScreenshot = async (screenshot: ScreenshotInstancia) => {
+    if (!confirm(`Excluir a screenshot "${screenshot.nome}"? Esta ação não pode ser desfeita.`)) {
+      return;
+    }
+
+    try {
+      await invoke("delete_instance_screenshot", {
+        instanceId,
+        nome: screenshot.nome,
+      });
+      setScreenshots((atuais) => atuais.filter((item) => item.nome !== screenshot.nome));
+    } catch (error) {
+      console.error("Erro ao excluir screenshot:", error);
+      alert(`Não foi possível excluir a screenshot: ${error}`);
     }
   };
 
@@ -1375,17 +1409,6 @@ export default function InstanceManager({
         });
       }
 
-      const largura = Number.parseInt(editWidth, 10);
-      const altura = Number.parseInt(editHeight, 10);
-
-      await invoke("update_instance_settings", {
-        instanceId: idAtual,
-        javaArgs: editJavaArgs,
-        mcArgs: instanceDetails.mcArgs,
-        width: Number.isFinite(largura) ? largura : undefined,
-        height: Number.isFinite(altura) ? altura : undefined,
-      });
-
       setIsEditing(false);
       if (idAtual !== instanceId) {
         onInstanceUpdate?.(idAtual);
@@ -1622,11 +1645,11 @@ export default function InstanceManager({
             {/* Ícone editável */}
             <div className="relative group">
               <div className="w-14 h-14 rounded-xl bg-[#1a1a1c] border border-white/10 overflow-hidden flex items-center justify-center">
-                {instanceDetails.icon ? (
-                  <img src={instanceDetails.icon} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <Package size={24} className="text-white/40" />
-                )}
+                <img
+                  src={instanceDetails.icon || ICONE_DOME_LAUNCHER}
+                  alt=""
+                  className="w-full h-full object-contain p-1"
+                />
               </div>
               {isEditing && (
                 <button className="absolute inset-0 bg-black/60 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
@@ -1709,70 +1732,10 @@ export default function InstanceManager({
                   Play
                 </button>
                 
-                {/* Settings Button */}
-                <div className="relative">
-                  <button 
-                    onClick={() => { setShowSettings(!showSettings); setShowMoreMenu(false); }}
-                    className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
-                  >
-                    <Settings size={18} className="text-white/60" />
-                  </button>
-                  
-                  {showSettings && (
-                    <div className="absolute right-0 top-full mt-2 w-72 bg-[#1a1a1c] border border-white/10 rounded-xl shadow-xl z-50">
-                      <div className="p-3 border-b border-white/5">
-                        <p className="text-xs text-white/40 uppercase font-bold">Configurações</p>
-                      </div>
-                      <div className="p-4 space-y-4">
-                        {/* Java Args */}
-                        <div>
-                          <label className="text-xs text-white/40 block mb-1">Java Arguments</label>
-                          <input
-                            type="text"
-                            value={editJavaArgs}
-                            onChange={(e) => setEditJavaArgs(e.target.value)}
-                            placeholder="-XX:+UseG1GC"
-                            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                          />
-                        </div>
-                        
-                        {/* Resolução */}
-                        <div>
-                          <label className="text-xs text-white/40 block mb-1">Resolução</label>
-                          <div className="flex gap-2">
-                            <input
-                              type="number"
-                              value={editWidth}
-                              onChange={(e) => setEditWidth(e.target.value)}
-                              placeholder="854"
-                              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                            />
-                            <span className="text-white/40 self-center">×</span>
-                            <input
-                              type="number"
-                              value={editHeight}
-                              onChange={(e) => setEditHeight(e.target.value)}
-                              placeholder="480"
-                              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                            />
-                          </div>
-                        </div>
-                        
-                        <button
-                          onClick={() => { saveInstanceSettings(); setShowSettings(false); }}
-                          className="w-full bg-emerald-500 hover:bg-emerald-400 text-black py-2 rounded-lg font-bold text-sm transition-all"
-                        >
-                          Salvar Configurações
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                
                 {/* More Options Button */}
                 <div className="relative">
                   <button 
-                    onClick={() => { setShowMoreMenu(!showMoreMenu); setShowSettings(false); }}
+                    onClick={() => setShowMoreMenu(!showMoreMenu)}
                     className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
                   >
                     <MoreVertical size={18} className="text-white/60" />
@@ -1816,7 +1779,11 @@ export default function InstanceManager({
       {/* Tabs */}
       <div className="px-6 pt-4 pb-2 border-b border-white/5">
         <div className="flex gap-1">
-          {(["content", "worlds", "logs"] as ContentTab[]).map((tab) => (
+          {(
+            isVanilla
+              ? (["content", "worlds", "screenshots", "logs"] as ContentTab[])
+              : (["content", "worlds", "configuration", "screenshots", "logs"] as ContentTab[])
+          ).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -1827,14 +1794,22 @@ export default function InstanceManager({
                   : "text-white/50 hover:text-white hover:bg-white/5"
               )}
             >
-              {tab === "content" ? "Conteúdo" : tab === "worlds" ? "Mundos" : "Logs"}
+              {tab === "content"
+                ? "Conteúdo"
+                : tab === "worlds"
+                  ? "Mundos"
+                  : tab === "configuration"
+                    ? "Configuração"
+                    : tab === "screenshots"
+                      ? "Screenshots"
+                    : "Logs"}
             </button>
           ))}
         </div>
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-hidden flex flex-col" onClick={() => { setShowSettings(false); setShowMoreMenu(false); }}>
+      <div className="flex-1 overflow-hidden flex flex-col" onClick={() => setShowMoreMenu(false)}>
         {activeTab === "content" && (
           <>
             {/* Search & Actions Bar */}
@@ -2345,6 +2320,26 @@ export default function InstanceManager({
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === "configuration" && instanceDetails && !isVanilla && (
+          <Configuracao
+            instanceId={instanceId}
+            memoriaPersonalizada={instanceDetails.memory}
+            argumentosJvm={instanceDetails.javaArgs}
+            largura={instanceDetails.width}
+            altura={instanceDetails.height}
+            onSalvar={loadInstanceDetails}
+          />
+        )}
+
+        {activeTab === "screenshots" && (
+          <Screenshots
+            screenshots={screenshots}
+            carregando={carregandoScreenshots}
+            onAtualizar={loadScreenshots}
+            onExcluir={excluirScreenshot}
+          />
         )}
 
         {/* LOGS TAB */}

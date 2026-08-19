@@ -30,6 +30,7 @@ pub struct GlobalSettings {
     pub show_snapshots: bool,  // mostrar snapshots na lista de versões
     pub discord_rpc_ativo: bool,
     pub cor_destaque: String,
+    pub instances_path: String,
 }
 
 impl Default for GlobalSettings {
@@ -55,9 +56,20 @@ impl Default for GlobalSettings {
             close_on_launch: false,
             show_snapshots: false,
             discord_rpc_ativo: true,
-            cor_destaque: "verde".to_string(),
+            cor_destaque: "#10B981".to_string(),
+            instances_path: get_default_instances_path().to_string_lossy().to_string(),
         }
     }
+}
+
+pub fn get_default_instances_path() -> std::path::PathBuf {
+    std::env::var("APPDATA")
+        .map(|app_data| {
+            std::path::PathBuf::from(app_data)
+                .join("dome")
+                .join("instances")
+        })
+        .unwrap_or_else(|_| std::path::PathBuf::from("instances"))
 }
 
 fn get_settings_path() -> std::path::PathBuf {
@@ -80,20 +92,53 @@ fn get_runtime_dir() -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from("runtime"))
 }
 
+pub fn carregar_configuracoes_locais() -> Result<GlobalSettings, String> {
+    let path = get_settings_path();
+    if !path.exists() {
+        return Ok(GlobalSettings::default());
+    }
+
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("Erro ao ler configurações: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Erro ao parsear configurações: {}", e))
+}
+
+fn validar_cor_destaque(cor: &str) -> Result<(), String> {
+    let hexadecimal = cor.strip_prefix('#').unwrap_or_default();
+    if hexadecimal.len() == 6
+        && hexadecimal
+            .chars()
+            .all(|caractere| caractere.is_ascii_hexdigit())
+    {
+        return Ok(());
+    }
+
+    Err("A cor de destaque deve usar o formato hexadecimal #RRGGBB".to_string())
+}
+
+fn preparar_diretorio_instancias(caminho: &str) -> Result<(), String> {
+    let caminho = std::path::PathBuf::from(caminho.trim());
+    if caminho.as_os_str().is_empty() || !caminho.is_absolute() {
+        return Err("Selecione um caminho absoluto para a pasta de instâncias".to_string());
+    }
+    if caminho.exists() && !caminho.is_dir() {
+        return Err("O caminho selecionado não é uma pasta".to_string());
+    }
+
+    std::fs::create_dir_all(&caminho)
+        .map_err(|e| format!("Não foi possível preparar a pasta de instâncias: {}", e))
+}
+
 #[tauri::command]
 pub async fn get_settings() -> Result<GlobalSettings, String> {
-    let path = get_settings_path();
-    if path.exists() {
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Erro ao ler configurações: {}", e))?;
-        serde_json::from_str(&content).map_err(|e| format!("Erro ao parsear configurações: {}", e))
-    } else {
-        Ok(GlobalSettings::default())
-    }
+    carregar_configuracoes_locais()
 }
 
 #[tauri::command]
 pub async fn save_settings(settings: GlobalSettings) -> Result<(), String> {
+    validar_cor_destaque(&settings.cor_destaque)?;
+    preparar_diretorio_instancias(&settings.instances_path)?;
+
     let path = get_settings_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Erro ao criar diretório: {}", e))?;
@@ -544,7 +589,16 @@ pub async fn get_required_java(mc_version: String) -> Result<u32, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::get_required_java_major;
+    use super::{get_required_java_major, validar_cor_destaque};
+
+    #[test]
+    fn valida_cor_de_destaque_hexadecimal() {
+        assert!(validar_cor_destaque("#10B981").is_ok());
+        assert!(validar_cor_destaque("#f97316").is_ok());
+        assert!(validar_cor_destaque("laranja").is_err());
+        assert!(validar_cor_destaque("#FFF").is_err());
+        assert!(validar_cor_destaque("#GG0000").is_err());
+    }
 
     #[test]
     fn identifica_java_das_versoes_classicas() {

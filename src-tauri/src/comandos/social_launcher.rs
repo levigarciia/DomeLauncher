@@ -416,8 +416,8 @@ pub async fn set_launcher_social_status(
         .map(|valor| valor.trim().to_lowercase())
         .filter(|valor| !valor.is_empty());
     if let Some(ref status) = status_manual {
-        if status != "online" && status != "ausente" {
-            return Err("statusManual invalido. Use online ou ausente.".to_string());
+        if status != "online" && status != "ausente" && status != "ocupado" {
+            return Err("statusManual invalido. Use online, ausente ou ocupado.".to_string());
         }
     }
 

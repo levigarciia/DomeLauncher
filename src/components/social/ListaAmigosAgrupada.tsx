@@ -10,6 +10,7 @@ import type {
     StatusPresenca,
 } from './tiposSocial';
 import { ImagemAtividade } from './ImagemAtividade';
+import { IndicadorStatusSocial } from './IndicadorStatusSocial';
 
 type AbaSocial = 'amigos' | 'pedidos';
 
@@ -44,15 +45,10 @@ interface ListaAmigosAgrupadaProps {
 }
 
 function classeStatus(status?: StatusPresenca): string {
-    if (status === 'ausente') return 'text-amber-300';
+    if (status === 'ausente') return 'text-[#FFC04E]';
+    if (status === 'ocupado') return 'text-[#DA3E44]';
     if (status === 'offline') return 'text-white/35';
-    return 'text-emerald-300';
-}
-
-function corStatus(status?: StatusPresenca): string {
-    if (status === 'ausente') return 'bg-amber-400';
-    if (status === 'offline') return 'bg-white/25';
-    return 'bg-emerald-400';
+    return 'text-[#45A366]';
 }
 
 function iniciais(nome: string): string {
@@ -105,7 +101,9 @@ function LinhaAmigo({
                         {iniciais(amigo.nome)}
                     </div>
                 )}
-                <span className={cn('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[#151515]', corStatus(amigo.status))} />
+                <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#151515]">
+                    <IndicadorStatusSocial status={amigo.status ?? 'offline'} className="h-2.5 w-2.5" />
+                </span>
             </div>
             <div className="min-w-0 flex-1">
                 <p className="truncate text-[12px] font-semibold text-white/85">{amigo.nome}</p>
@@ -183,7 +181,9 @@ function LinhaAmigoJogando({
                         {iniciais(amigo.nome)}
                     </span>
                 )}
-                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[#151515] bg-emerald-400" />
+                <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#151515]">
+                    <IndicadorStatusSocial status={amigo.status ?? 'online'} className="h-2.5 w-2.5" />
+                </span>
             </button>
 
             <button

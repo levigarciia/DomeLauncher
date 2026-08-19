@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Upload, Loader2 } from "../iconesPixelados";
+import { Loader2, Trash2, Upload, X } from "../iconesPixelados";
 import { invoke } from "@tauri-apps/api/core";
 import { MinecraftAccount } from "../App";
 import { cn } from "../lib/utils";
 import { SkinPreviewRenderer } from "./SkinPreviewRenderer";
 import { MiniaturaSkinMinecraft } from "./MiniaturaSkinMinecraft";
+import { MiniaturaCapaMinecraft } from "./MiniaturaCapaMinecraft";
 import { SKINS_PADRAO, type SkinPadrao } from "../assets/skinsPadrao";
 
 interface SkinManagerProps {
@@ -71,6 +72,7 @@ export function SkinManager({ user }: SkinManagerProps) {
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [modoEditor, setModoEditor] = useState<"skin" | "capa">("skin");
   const inputRef = useRef<HTMLInputElement>(null);
+  const cliqueSkinSalvaTimeoutRef = useRef<number | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "uploading" | "success" | "error">(
@@ -87,6 +89,8 @@ export function SkinManager({ user }: SkinManagerProps) {
   const [capaSelecionadaId, setCapaSelecionadaId] = useState<string | null>(null);
   const [capaOriginalId, setCapaOriginalId] = useState<string | null>(null);
   const [skinsSalvas, setSkinsSalvas] = useState<SkinSalva[]>(carregarSkinsSalvas);
+  const [nomeNovaSkin, setNomeNovaSkin] = useState("Minha skin");
+  const [skinEditandoId, setSkinEditandoId] = useState<string | null>(null);
 
   const previewSkinUrl = useMemo(() => {
     if (!user) return "";
@@ -102,6 +106,14 @@ export function SkinManager({ user }: SkinManagerProps) {
       if (previewEditorUrl.startsWith("blob:")) URL.revokeObjectURL(previewEditorUrl);
     };
   }, [previewEditorUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (cliqueSkinSalvaTimeoutRef.current !== null) {
+        window.clearTimeout(cliqueSkinSalvaTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const carregarCosmeticos = useCallback(async () => {
     if (!user) return;
@@ -173,13 +185,25 @@ export function SkinManager({ user }: SkinManagerProps) {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      openUploadModal(e.target.files[0]);
+      const arquivo = e.target.files[0];
+      if (isUploadModalOpen && modoEditor === "skin") {
+        setSelectedFile(arquivo);
+        setUploadStatus("idle");
+        if (!skinEditandoId && nomeNovaSkin === "Minha skin") {
+          setNomeNovaSkin(arquivo.name.replace(/\.png$/i, "").trim() || "Minha skin");
+        }
+      } else {
+        openUploadModal(arquivo);
+      }
+      e.target.value = "";
     }
   };
 
   const openUploadModal = (file: File) => {
     limparMensagens();
     setSelectedFile(file);
+    setNomeNovaSkin(file.name.replace(/\.png$/i, "").trim() || "Minha skin");
+    setSkinEditandoId(null);
     setModoEditor("skin");
     setIsUploadModalOpen(true);
     setUploadStatus("idle");
@@ -188,6 +212,8 @@ export function SkinManager({ user }: SkinManagerProps) {
   const abrirEditorSkin = () => {
     limparMensagens();
     setSelectedFile(null);
+    setNomeNovaSkin("Minha skin");
+    setSkinEditandoId(null);
     setModoEditor("skin");
     setIsUploadModalOpen(true);
     setUploadStatus("idle");
@@ -196,15 +222,63 @@ export function SkinManager({ user }: SkinManagerProps) {
   const abrirEditorCapa = () => {
     limparMensagens();
     setSelectedFile(null);
+    setSkinEditandoId(null);
     setModoEditor("capa");
     setIsUploadModalOpen(true);
     setUploadStatus("idle");
   };
 
-  const persistirSkinsSalvas = (proximasSkins: SkinSalva[]) => {
-    const limitadas = proximasSkins.slice(0, 12);
-    setSkinsSalvas(limitadas);
-    localStorage.setItem(CHAVE_SKINS_SALVAS, JSON.stringify(limitadas));
+  const persistirSkinsSalvas = (criarLista: (atuais: SkinSalva[]) => SkinSalva[]) => {
+    setSkinsSalvas((atuais) => {
+      const limitadas = criarLista(atuais).slice(0, 12);
+      localStorage.setItem(CHAVE_SKINS_SALVAS, JSON.stringify(limitadas));
+      return limitadas;
+    });
+  };
+
+  const salvarSkinNaBiblioteca = (
+    bytes: number[],
+    varianteSkin: "classic" | "slim",
+    nome: string,
+    idAnterior?: string | null,
+  ) => {
+    const id = identificarBytes(bytes);
+    persistirSkinsSalvas((atuais) => [
+      {
+        id,
+        nome: nome.trim() || "Minha skin",
+        variant: varianteSkin,
+        bytes,
+        salvaEm: Date.now(),
+      },
+      ...atuais.filter((skin) => skin.id !== id && skin.id !== idAnterior),
+    ]);
+  };
+
+  const abrirEditorSkinSalva = (skin: SkinSalva) => {
+    limparMensagens();
+    const arquivo = new File(
+      [new Uint8Array(skin.bytes)],
+      `${skin.nome.trim() || "skin-salva"}.png`,
+      { type: "image/png" },
+    );
+    setSelectedFile(arquivo);
+    setNomeNovaSkin(skin.nome);
+    setVariant(skin.variant);
+    setSkinEditandoId(skin.id);
+    setModoEditor("skin");
+    setUploadStatus("idle");
+    setIsUploadModalOpen(true);
+  };
+
+  const excluirSkinSalva = (skin: SkinSalva) => {
+    if (!window.confirm(`Excluir "${skin.nome}" das skins salvas?`)) return;
+
+    if (cliqueSkinSalvaTimeoutRef.current !== null) {
+      window.clearTimeout(cliqueSkinSalvaTimeoutRef.current);
+      cliqueSkinSalvaTimeoutRef.current = null;
+    }
+    persistirSkinsSalvas((atuais) => atuais.filter((item) => item.id !== skin.id));
   };
 
   const preservarSkinAtual = async () => {
@@ -214,18 +288,19 @@ export function SkinManager({ user }: SkinManagerProps) {
         accessToken: user.access_token,
       });
       const id = identificarBytes(atual.bytes);
-      if (skinsSalvas.some((skin) => skin.id === id)) return;
-
-      persistirSkinsSalvas([
-        {
-          id,
-          nome: `Skin de ${new Date().toLocaleDateString("pt-BR")}`,
-          variant: atual.variant,
-          bytes: atual.bytes,
-          salvaEm: Date.now(),
-        },
-        ...skinsSalvas,
-      ]);
+      persistirSkinsSalvas((atuais) => {
+        if (atuais.some((skin) => skin.id === id)) return atuais;
+        return [
+          {
+            id,
+            nome: `Skin de ${new Date().toLocaleDateString("pt-BR")}`,
+            variant: atual.variant,
+            bytes: atual.bytes,
+            salvaEm: Date.now(),
+          },
+          ...atuais,
+        ];
+      });
     } catch (erro) {
       console.warn("Não foi possível preservar a skin anterior:", erro);
     }
@@ -282,29 +357,58 @@ export function SkinManager({ user }: SkinManagerProps) {
     }
   };
 
+  const aplicarSkinSalvaComClique = (skin: SkinSalva) => {
+    if (cliqueSkinSalvaTimeoutRef.current !== null) {
+      window.clearTimeout(cliqueSkinSalvaTimeoutRef.current);
+    }
+    cliqueSkinSalvaTimeoutRef.current = window.setTimeout(() => {
+      cliqueSkinSalvaTimeoutRef.current = null;
+      void aplicarSkinSalva(skin);
+    }, 220);
+  };
+
+  const editarSkinSalvaComDuploClique = (
+    evento: React.MouseEvent<HTMLButtonElement>,
+    skin: SkinSalva
+  ) => {
+    evento.preventDefault();
+    if (cliqueSkinSalvaTimeoutRef.current !== null) {
+      window.clearTimeout(cliqueSkinSalvaTimeoutRef.current);
+      cliqueSkinSalvaTimeoutRef.current = null;
+    }
+    abrirEditorSkinSalva(skin);
+  };
+
   const salvarEditorAtual = async () => {
     setUploadStatus("uploading");
     limparMensagens();
     try {
       if (selectedFile) {
         const arrayBuffer = await selectedFile.arrayBuffer();
-        await enviarSkin(Array.from(new Uint8Array(arrayBuffer)), variant);
+        const bytes = Array.from(new Uint8Array(arrayBuffer));
+        if (!skinEditandoId) {
+          await enviarSkin(bytes, variant);
+        }
+        salvarSkinNaBiblioteca(bytes, variant, nomeNovaSkin, skinEditandoId);
       } else if (variant !== variantOriginal) {
         const atual = await invoke<SkinAtualBaixada>("baixar_skin_atual", {
           accessToken: user.access_token,
         });
         await enviarSkin(atual.bytes, variant);
       }
-      if (capaSelecionadaId !== capaOriginalId) {
+      if (!skinEditandoId && capaSelecionadaId !== capaOriginalId) {
         await invoke("equipar_capa", {
           accessToken: user.access_token,
           capeId: capaSelecionadaId,
         });
       }
-      await carregarCosmeticos();
+      if (!skinEditandoId) await carregarCosmeticos();
       setUploadStatus("success");
-      setMensagemStatus("Visual atualizado.");
-      setTimeout(() => setIsUploadModalOpen(false), 700);
+      setMensagemStatus(skinEditandoId ? "Skin salva atualizada." : "Visual atualizado.");
+      setTimeout(() => {
+        setIsUploadModalOpen(false);
+        setSkinEditandoId(null);
+      }, 700);
     } catch (erro) {
       console.error("Erro ao atualizar skin e capa:", erro);
       setUploadStatus("error");
@@ -317,16 +421,7 @@ export function SkinManager({ user }: SkinManagerProps) {
   return (
     <div className="relative grid flex-1 grid-cols-1 gap-8 overflow-hidden p-8 lg:grid-cols-[1fr_2.5fr]">
       <div className="flex h-full flex-col items-center justify-center">
-        <div className="w-full">
-          <h1 className="flex items-center gap-3 text-3xl font-bold">
-            Skins
-            <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-emerald-400">
-              Beta
-            </span>
-          </h1>
-        </div>
-
-        <div className="group relative z-10 mt-6 flex w-full cursor-grab flex-col items-center active:cursor-grabbing">
+        <div className="group relative z-10 flex w-full cursor-grab flex-col items-center active:cursor-grabbing">
           <span className="mb-4 rounded border border-white/5 bg-black/40 px-3 py-1 text-xs text-white/70">
             {user.name}
           </span>
@@ -371,33 +466,37 @@ export function SkinManager({ user }: SkinManagerProps) {
         <section>
           <h2 className="mb-4 text-lg font-bold text-white/90">Skins salvas</h2>
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-5">
-            <div
+            <input
+              ref={inputRef}
+              type="file"
+              className="hidden"
+              accept=".png"
+              onChange={handleFileChange}
+            />
+            <button
+              type="button"
               onClick={abrirEditorSkin}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
               onDrop={handleDrop}
               className={cn(
-                "group flex aspect-[0.85] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed transition-all",
+                "group grid min-w-0 aspect-[0.85] cursor-pointer place-items-center overflow-hidden rounded-xl border-2 border-dashed text-center transition-all",
                 dragActive
                   ? "border-emerald-500 bg-emerald-500/10"
                   : "border-white/10 bg-[#121214] hover:border-white/20 hover:bg-[#18181b]"
               )}
             >
-              <input
-                ref={inputRef}
-                type="file"
-                className="hidden"
-                accept=".png"
-                onChange={handleFileChange}
-              />
-              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 transition-transform group-hover:scale-110">
-                <span className="text-2xl font-light text-white/50">+</span>
+              <div className="flex min-w-0 max-w-full flex-col items-center justify-center gap-3 px-2">
+                <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white/5 text-2xl font-light text-white/50 transition-transform group-hover:scale-110">
+                  +
+                </span>
+                <span className="block max-w-full text-[clamp(9px,1.15vw,14px)] font-bold leading-[1.05] text-white/50 transition-colors group-hover:text-white">
+                  <span className="block truncate">Adicionar</span>
+                  <span className="block truncate">skin</span>
+                </span>
               </div>
-              <span className="text-sm font-bold text-white/50 transition-colors group-hover:text-white">
-                Adicionar skin
-              </span>
-            </div>
+            </button>
 
             <div className="relative aspect-[0.85] overflow-hidden rounded-xl border-2 border-emerald-500/50 bg-[#121214]">
               <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_center,_rgba(255,255,255,0.08)_0,_transparent_60%)] p-4">
@@ -412,27 +511,55 @@ export function SkinManager({ user }: SkinManagerProps) {
             {skinsSalvas.map((skin) => {
               const carregando = aplicandoSkinPadrao === skin.id;
               return (
-                <button
-                  type="button"
+                <div
                   key={skin.id}
-                  onClick={() => void aplicarSkinSalva(skin)}
-                  disabled={Boolean(aplicandoSkinPadrao)}
-                  className="group relative aspect-[0.85] overflow-hidden rounded-xl border border-white/8 bg-[#121214] p-3 transition-colors hover:border-white/20 disabled:opacity-50"
+                  title={skin.nome}
+                  className="group relative aspect-[0.85] overflow-hidden rounded-xl border border-white/8 bg-[#121214] transition-colors hover:border-white/20"
                 >
+                  <button
+                    type="button"
+                    onClick={() => aplicarSkinSalvaComClique(skin)}
+                    onDoubleClick={(evento) => editarSkinSalvaComDuploClique(evento, skin)}
+                    disabled={Boolean(aplicandoSkinPadrao)}
+                    aria-label={`Aplicar ${skin.nome}`}
+                    title={`${skin.nome} — clique duas vezes para editar`}
+                    className="absolute inset-0 flex items-center justify-center px-4 pb-9 pt-3 disabled:opacity-50"
+                  >
+                    <MiniaturaSkinMinecraft
+                      skinUrl={bytesParaDataUrl(skin.bytes)}
+                      modelo={skin.variant}
+                      className="h-full w-auto [image-rendering:pixelated] transition-transform group-hover:scale-105"
+                    />
+                  </button>
                   {carregando && (
                     <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/65">
                       <Loader2 size={20} className="animate-spin text-emerald-400" />
                     </div>
                   )}
-                  <img
-                    src={bytesParaDataUrl(skin.bytes)}
-                    alt={skin.nome}
-                    className="h-full w-full object-contain [image-rendering:pixelated]"
-                  />
-                  <span className="absolute inset-x-2 bottom-2 truncate bg-black/70 px-2 py-1 text-[9px] font-bold text-white/75">
-                    {skin.nome}
-                  </span>
-                </button>
+                  <div className="absolute inset-x-2 bottom-2 z-30 flex min-w-0 items-center gap-1 bg-black/80 p-1">
+                    <span className="min-w-0 flex-1 truncate px-1 text-center text-[9px] font-bold text-white/75">
+                      {skin.nome}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(evento) => {
+                        evento.stopPropagation();
+                        excluirSkinSalva(skin);
+                      }}
+                      disabled={carregando}
+                      aria-label={`Excluir ${skin.nome}`}
+                      title={`Excluir ${skin.nome}`}
+                      className={cn(
+                        "grid h-6 w-6 shrink-0 place-items-center rounded text-white/35",
+                        "transition-colors hover:bg-red-500/15 hover:text-red-300",
+                        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-red-300/70",
+                        "disabled:pointer-events-none disabled:opacity-30"
+                      )}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -482,7 +609,10 @@ export function SkinManager({ user }: SkinManagerProps) {
               className="relative grid max-h-[88vh] w-full max-w-3xl grid-cols-1 overflow-hidden rounded-2xl border border-white/10 bg-[#111113] shadow-2xl md:grid-cols-[0.8fr_1.2fr]"
             >
               <button
-                onClick={() => setIsUploadModalOpen(false)}
+                onClick={() => {
+                  setIsUploadModalOpen(false);
+                  setSkinEditandoId(null);
+                }}
                 className="absolute right-4 top-4 z-20 rounded-lg p-1.5 text-white/30 transition-colors hover:bg-white/8 hover:text-white"
               >
                 <X size={20} />
@@ -506,13 +636,31 @@ export function SkinManager({ user }: SkinManagerProps) {
                     Aparência
                   </p>
                   <h3 className="mt-1 text-xl font-bold">
-                    {modoEditor === "skin" ? "Editar skin" : "Escolher capa"}
+                    {modoEditor === "skin"
+                      ? skinEditandoId
+                        ? "Editar skin salva"
+                        : "Editar skin"
+                      : "Escolher capa"}
                   </h3>
                 </div>
 
                 <div className="space-y-5">
                   {modoEditor === "skin" && (
                     <>
+                      <section>
+                        <span className="mb-2 block text-xs font-bold text-white/65">
+                          Nome da skin
+                        </span>
+                        <input
+                          type="text"
+                          value={nomeNovaSkin}
+                          onChange={(evento) => setNomeNovaSkin(evento.target.value)}
+                          maxLength={40}
+                          className="w-full rounded-lg border border-white/8 bg-black/20 px-3 py-2 text-sm text-white/75 outline-none transition-colors focus:border-emerald-400/35"
+                          placeholder="Minha skin"
+                        />
+                      </section>
+
                       <section>
                         <div className="mb-2 flex items-center justify-between gap-3">
                           <span className="text-xs font-bold text-white/65">Textura</span>
@@ -590,11 +738,13 @@ export function SkinManager({ user }: SkinManagerProps) {
                               : "border-white/8 bg-white/3 hover:bg-white/6"
                           )}
                         >
-                          <img
-                            src={capa.url}
-                            alt={capa.alias || "Capa"}
-                            className="h-12 w-full object-contain [image-rendering:pixelated]"
+                          <MiniaturaCapaMinecraft
+                            capaUrl={capa.url}
+                            className="h-14 w-auto [image-rendering:pixelated] drop-shadow-lg"
                           />
+                          <span className="absolute inset-x-1 bottom-1 truncate text-center text-[8px] font-bold text-white/45">
+                            {capa.alias || "Capa"}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -617,7 +767,9 @@ export function SkinManager({ user }: SkinManagerProps) {
                     {uploadStatus === "success"
                       ? "Atualizado"
                       : modoEditor === "skin"
-                        ? "Aplicar skin"
+                        ? skinEditandoId
+                          ? "Salvar alterações"
+                          : "Aplicar skin"
                         : "Aplicar capa"}
                   </button>
                   {uploadStatus === "error" && (

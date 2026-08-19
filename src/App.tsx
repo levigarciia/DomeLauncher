@@ -33,6 +33,7 @@ import SocialSidebar from "./components/SocialSidebar";
 import { EsqueletoAba } from "./components/EsqueletoCarregamento";
 import VisualizacaoInstanciaSocial from "./components/VisualizacaoInstanciaSocial";
 import type { AmigoSocial } from "./components/social/tiposSocial";
+import { aplicarCorDestaque, normalizarCorDestaque } from "./lib/corDestaque";
 
 const carregarSkinManager = () =>
   import("./components/SkinManager").then((modulo) => ({ default: modulo.SkinManager }));
@@ -143,16 +144,6 @@ const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
 const INTERVALO_VERIFICACAO_INSTANCIAS_MS = 20 * 1000;
 type TipoExplorePresence = "modpack" | "mod" | "resourcepack" | "shader";
 type FonteExplorePresence = "modrinth" | "curseforge";
-type CorDestaque = "verde" | "azul" | "laranja" | "rosa" | "ciano";
-
-function normalizarCorDestaque(valor: unknown): CorDestaque {
-  const texto = String(valor || "").toLowerCase().trim();
-  if (texto === "azul" || texto === "laranja" || texto === "rosa" || texto === "ciano") {
-    return texto;
-  }
-  return "verde";
-}
-
 const TITULOS_ABA: Record<string, string> = {
   home: "Início",
   instances: "Biblioteca",
@@ -167,6 +158,11 @@ const TITULOS_ABA: Record<string, string> = {
 export default function App() {
   const { instances, launch, launchServer, remove, fetchInstances } = useLauncher();
   const [activeTab, setActiveTab] = useState("home");
+  const [solicitacaoMenuCriarGrupo, setSolicitacaoMenuCriarGrupo] = useState<{
+    id: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const navegarParaAba = useCallback((aba: string) => {
     startTransition(() => setActiveTab(aba));
   }, []);
@@ -195,12 +191,13 @@ export default function App() {
   const [projetoDetalhe, setProjetoDetalhe] = useState<ProjetoConteudo | null>(null);
   const [atividadeSocialDetalhe, setAtividadeSocialDetalhe] = useState<AmigoSocial | null>(null);
   const [abaOrigemProjeto, setAbaOrigemProjeto] = useState<AbaOrigemProjeto>("home");
-  const [corDestaque, setCorDestaque] = useState<CorDestaque>("verde");
+  const [corDestaque, setCorDestaque] = useState("#10B981");
   const [contasMinecraft, setContasMinecraft] = useState<MinecraftAccount[]>([]);
   const [carregandoContasMinecraft, setCarregandoContasMinecraft] = useState(false);
   const [menuContaAberto, setMenuContaAberto] = useState(false);
   const [socialDrawerAberto, setSocialDrawerAberto] = useState(false);
   const [chatSocialAberto, setChatSocialAberto] = useState(false);
+  const [painelSocialRecuado, setPainelSocialRecuado] = useState(true);
   const ehTelaXl = useBreakpointXl();
   const ultimaAssinaturaPresence = useRef<string>("");
   const menuContaRef = useRef<HTMLDivElement | null>(null);
@@ -318,7 +315,7 @@ export default function App() {
         const configuracoes = await invoke<{ cor_destaque?: string }>("get_settings");
         setCorDestaque(normalizarCorDestaque(configuracoes?.cor_destaque));
       } catch {
-        setCorDestaque("verde");
+        setCorDestaque("#10B981");
       }
     };
 
@@ -335,7 +332,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-cor-destaque", corDestaque);
+    aplicarCorDestaque(corDestaque);
   }, [corDestaque]);
 
   useEffect(() => {
@@ -839,7 +836,7 @@ export default function App() {
     { id: "favorites", icon: Heart, label: "Favoritos" },
     { id: "skins", icon: Avatar, label: "Skins" },
   ];
-  const ocultarTopbar = activeTab === "instance-manager" || activeTab === "skins";
+  const ocultarTopbar = activeTab === "instance-manager";
 
   return (
     <div className="app-shell launcher-shell relative flex h-screen w-full overflow-hidden text-white">
@@ -1093,6 +1090,11 @@ export default function App() {
               <h2 className="font-['MinecraftTen','Sora',sans-serif] text-[20px] tracking-[0.4px] text-white">
                 {TITULOS_ABA[activeTab] ?? ""}
               </h2>
+              {activeTab === "skins" && (
+                <span className="border border-emerald-400/25 bg-emerald-400/[0.08] px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.16em] text-emerald-300">
+                  Beta
+                </span>
+              )}
 
             </div>
 
@@ -1106,7 +1108,6 @@ export default function App() {
                   Social
                 </button>
               )}
-              <div className="h-[20px] w-[144px]" />
             </div>
           </header>
         )}
@@ -1181,6 +1182,7 @@ export default function App() {
                   onDelete={(id) => remove(id)}
                   onCreateNew={() => setIsCreateOpen(true)}
                   onAtualizarInstancias={fetchInstances}
+                  solicitacaoMenuCriarGrupo={solicitacaoMenuCriarGrupo}
                   user={user}
                   onLogin={() => setIsLoginOpen(true)}
                 />
@@ -1337,8 +1339,22 @@ export default function App() {
               initial={{ y: 80, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 80, opacity: 0 }}
+              onContextMenu={(evento) => {
+                if (activeTab !== "instances") return;
+                const alvo = evento.target as HTMLElement;
+                if (alvo.closest("button")) return;
+
+                evento.preventDefault();
+                evento.stopPropagation();
+                setSolicitacaoMenuCriarGrupo({
+                  id: Date.now(),
+                  x: evento.clientX,
+                  y: evento.clientY,
+                });
+              }}
               className={cn(
-                "pointer-events-none absolute bottom-0 left-0 right-0 p-6 transition-[padding]",
+                "absolute bottom-0 left-0 right-0 p-6 transition-[padding]",
+                activeTab === "instances" ? "pointer-events-auto" : "pointer-events-none",
                 ehTelaXl && chatSocialAberto && "pr-[384px]"
               )}
             >
@@ -1398,7 +1414,10 @@ export default function App() {
         <div
           className={cn(
             ehTelaXl
-              ? "relative flex w-[340px] shrink-0"
+              ? cn(
+                  "relative flex shrink-0 transition-[width] duration-200",
+                  painelSocialRecuado ? "w-[72px]" : "w-[340px]"
+                )
               : cn(
                   "fixed inset-0 z-[80] transition-colors duration-200 xl:hidden",
                   socialDrawerAberto
@@ -1425,7 +1444,9 @@ export default function App() {
               usuarioMinecraft={user}
               iconeAtividadeLocal={instanciaAtiva?.icon}
               className={cn(
-                "flex h-full w-[340px] shrink-0 overflow-y-auto scrollbar-hide",
+                "flex h-full shrink-0 overflow-y-auto scrollbar-hide",
+                ehTelaXl && (painelSocialRecuado ? "w-[72px]" : "w-[340px]"),
+                !ehTelaXl && "w-[340px]",
                 !ehTelaXl && "max-w-[92vw]"
               )}
               onFecharDrawer={
@@ -1433,6 +1454,10 @@ export default function App() {
               }
               onAlterarChatAberto={setChatSocialAberto}
               onAbrirAtividadeAmigo={abrirAtividadeAmigo}
+              recuado={ehTelaXl && painelSocialRecuado}
+              onAlternarRecuo={
+                ehTelaXl ? () => setPainelSocialRecuado((anterior) => !anterior) : undefined
+              }
             />
           </div>
         </div>

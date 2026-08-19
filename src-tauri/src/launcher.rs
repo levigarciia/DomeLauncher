@@ -615,7 +615,25 @@ impl LauncherState {
             .map(|app_data| PathBuf::from(app_data).join("dome"))
             .unwrap_or_else(|_| PathBuf::from("."));
 
-        let instances_path = data_path.join("instances");
+        let instances_path =
+            match crate::comandos::configuracoes_java::carregar_configuracoes_locais() {
+                Ok(configuracoes) => {
+                    let caminho = PathBuf::from(configuracoes.instances_path);
+                    if caminho.is_absolute() {
+                        caminho
+                    } else {
+                        eprintln!("[Instâncias] Caminho configurado não é absoluto; usando o local padrão.");
+                        crate::comandos::configuracoes_java::get_default_instances_path()
+                    }
+                }
+                Err(erro) => {
+                    eprintln!(
+                        "[Instâncias] Configuração de pasta inválida ({}); usando o local padrão.",
+                        erro
+                    );
+                    crate::comandos::configuracoes_java::get_default_instances_path()
+                }
+            };
 
         // Criar o diretório se não existir
         if let Err(e) = std::fs::create_dir_all(&instances_path) {
@@ -895,6 +913,7 @@ impl LauncherState {
                                     if icone_generico {
                                         let caminho_modpack = entry.path().join("modpack.json");
                                         if caminho_modpack.exists() {
+                                            let mut encontrou_icone_modpack = false;
                                             if let Ok(conteudo_modpack) =
                                                 std::fs::read_to_string(&caminho_modpack)
                                             {
@@ -910,9 +929,13 @@ impl LauncherState {
                                                         .filter(|valor| !valor.is_empty())
                                                     {
                                                         instance.icon = Some(icone_modpack);
+                                                        encontrou_icone_modpack = true;
                                                         precisa_salvar = true;
                                                     }
                                                 }
+                                            }
+                                            if !encontrou_icone_modpack {
+                                                instance.icon = None;
                                             }
                                         }
                                     }
