@@ -46,7 +46,6 @@ interface ListaAmigosAgrupadaProps {
 
 function classeStatus(status?: StatusPresenca): string {
     if (status === 'ausente') return 'text-[#FFC04E]';
-    if (status === 'ocupado') return 'text-[#DA3E44]';
     if (status === 'offline') return 'text-white/35';
     return 'text-[#45A366]';
 }

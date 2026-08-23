@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   ArrowUpDown,
+  GripVertical,
   FolderOpen,
   X,
   Pencil,
@@ -19,15 +20,12 @@ import {
   Upload,
   Download,
   Loader2,
-  Image as ImageIcon,
-  Check,
 } from "../iconesPixelados";
-import { motion, AnimatePresence, LayoutGroup } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Instance } from "../hooks/useLauncher";
 import { cn } from "../lib/utils";
-import { ICONE_DOME_LAUNCHER } from "../lib/imagemProjeto";
 import {
   finalizarImportacoes,
   iniciarImportacoes,
@@ -39,29 +37,19 @@ import {
 type ViewMode = "grid" | "list";
 type SortKey = "manual" | "name" | "last_played" | "version" | "loader";
 type SortDir = "asc" | "desc";
-type GroupFormat = "full" | "wide" | "half" | "compact";
 
 interface InstanceGroup {
   id: string;
   name: string;
   collapsed: boolean;
   instanceIds: string[];
-  icon?: string;
-  format?: GroupFormat;
-  viewMode: ViewMode;
-  sortKey: SortKey;
-  sortDir: SortDir;
 }
 
 interface LibraryState {
   groups: InstanceGroup[];
-}
-
-interface LibraryStateLegado {
-  groups?: Array<Partial<InstanceGroup> & Pick<InstanceGroup, "id" | "name">>;
-  viewMode?: ViewMode;
-  sortKey?: SortKey;
-  sortDir?: SortDir;
+  viewMode: ViewMode;
+  sortKey: SortKey;
+  sortDir: SortDir;
 }
 
 interface InstanciaImportavelExterna {
@@ -91,83 +79,21 @@ interface MenuContextoInstancia {
   y: number;
 }
 
-interface MenuContextoGrupo {
-  grupo: InstanceGroup;
-  x: number;
-  y: number;
-}
-
-interface MenuContextoArea {
-  x: number;
-  y: number;
-}
-
-interface CursorArrastoBiblioteca {
-  tipo: "instancia" | "grupo";
-  id: string;
-  x: number;
-  y: number;
-}
-
 function deduplicarIds(ids: string[]): string[] {
   return Array.from(new Set(ids));
 }
 
-async function prepararIconeGrupo(arquivo: File): Promise<string> {
-  if (!arquivo.type.startsWith("image/")) {
-    throw new Error("Selecione um arquivo de imagem.");
-  }
-  if (arquivo.size > 8 * 1024 * 1024) {
-    throw new Error("A imagem deve ter no máximo 8 MB.");
-  }
-
-  const bitmap = await createImageBitmap(arquivo);
-  try {
-    const tamanho = 128;
-    const escala = Math.min(tamanho / bitmap.width, tamanho / bitmap.height);
-    const largura = Math.max(1, Math.round(bitmap.width * escala));
-    const altura = Math.max(1, Math.round(bitmap.height * escala));
-    const canvas = document.createElement("canvas");
-    canvas.width = tamanho;
-    canvas.height = tamanho;
-    const contexto = canvas.getContext("2d");
-    if (!contexto) throw new Error("Não foi possível preparar o ícone.");
-
-    contexto.imageSmoothingEnabled = true;
-    contexto.imageSmoothingQuality = "high";
-    contexto.drawImage(bitmap, (tamanho - largura) / 2, (tamanho - altura) / 2, largura, altura);
-    return canvas.toDataURL("image/png");
-  } finally {
-    bitmap.close();
-  }
-}
-
 // Chave de storage
 const STORAGE_KEY = "dome-library-state";
-const PREFERENCIAS_GRUPO_PADRAO = {
-  viewMode: "grid" as ViewMode,
-  sortKey: "name" as SortKey,
-  sortDir: "asc" as SortDir,
-};
-const ROTULOS_ORDENACAO: Record<SortKey, string> = {
-  manual: "Manual",
-  name: "Nome",
-  last_played: "Último jogado",
-  version: "Versão",
-  loader: "Loader",
-};
 
 // Estado padrão
 const defaultState: LibraryState = {
   groups: [
-    {
-      id: "default",
-      name: "Instâncias",
-      collapsed: false,
-      instanceIds: [],
-      ...PREFERENCIAS_GRUPO_PADRAO,
-    },
+    { id: "default", name: "Instâncias", collapsed: false, instanceIds: [] },
   ],
+  viewMode: "grid",
+  sortKey: "name",
+  sortDir: "asc",
 };
 
 // Carregar estado salvo
@@ -175,18 +101,12 @@ function carregarEstado(): LibraryState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const estado = JSON.parse(raw) as LibraryStateLegado;
+      const estado = JSON.parse(raw) as LibraryState;
       return {
+        ...estado,
         groups: (estado.groups || []).map((grupo) => ({
-          id: grupo.id,
-          name: grupo.name,
-          collapsed: Boolean(grupo.collapsed),
+          ...grupo,
           instanceIds: deduplicarIds(grupo.instanceIds || []),
-          icon: grupo.icon,
-          format: grupo.format,
-          viewMode: grupo.viewMode || estado.viewMode || PREFERENCIAS_GRUPO_PADRAO.viewMode,
-          sortKey: grupo.sortKey || estado.sortKey || PREFERENCIAS_GRUPO_PADRAO.sortKey,
-          sortDir: grupo.sortDir || estado.sortDir || PREFERENCIAS_GRUPO_PADRAO.sortDir,
         })),
       };
     }
@@ -243,7 +163,6 @@ interface LibraryPageProps {
   onDelete: (id: string) => void;
   onCreateNew: () => void;
   onAtualizarInstancias: () => Promise<void>;
-  solicitacaoMenuCriarGrupo: { id: number; x: number; y: number } | null;
   user: any;
   onLogin: () => void;
 }
@@ -257,7 +176,6 @@ export default function LibraryPage({
   onDelete,
   onCreateNew,
   onAtualizarInstancias,
-  solicitacaoMenuCriarGrupo,
   user,
   onLogin,
 }: LibraryPageProps) {
@@ -268,9 +186,8 @@ export default function LibraryPage({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
   const [grupoArrastadoId, setGrupoArrastadoId] = useState<string | null>(null);
+  const [menuAberto, setMenuAberto] = useState<string | null>(null);
   const [menuContexto, setMenuContexto] = useState<MenuContextoInstancia | null>(null);
-  const [menuContextoGrupo, setMenuContextoGrupo] = useState<MenuContextoGrupo | null>(null);
-  const [menuContextoArea, setMenuContextoArea] = useState<MenuContextoArea | null>(null);
   const [grupoExclusao, setGrupoExclusao] = useState<InstanceGroup | null>(null);
   const [modalEscolhaImportacaoAberto, setModalEscolhaImportacaoAberto] = useState(false);
   const [modalImportacaoAberto, setModalImportacaoAberto] = useState(false);
@@ -294,43 +211,15 @@ export default function LibraryPage({
   >([]);
   const [erroImportacao, setErroImportacao] = useState<string | null>(null);
   const [arrastoManualAtivo, setArrastoManualAtivo] = useState(false);
-  const [cursorArrasto, setCursorArrasto] = useState<CursorArrastoBiblioteca | null>(null);
-  const [instanciaDestinoArrastoId, setInstanciaDestinoArrastoId] = useState<string | null>(null);
   const [agoraSegundos, setAgoraSegundos] = useState(() =>
     Math.floor(Date.now() / 1000)
   );
   const inputRef = useRef<HTMLInputElement>(null);
-  const inputIconeGrupoRef = useRef<HTMLInputElement>(null);
-  const grupoIconeAlvoRef = useRef<string | null>(null);
-  const grupoDestinoCriacaoRef = useRef<string | null>(null);
-  const instanciaArrastadaRef = useRef<string | null>(null);
-  const grupoArrastadoRef = useRef<string | null>(null);
-  const limparArrastoPonteiroRef = useRef<(() => void) | null>(null);
-  const idsInstanciasVisiveis = new Set(instances.map((instancia) => instancia.id));
 
   // Salvar estado ao mudar
   useEffect(() => {
     salvarEstado(state);
   }, [state]);
-
-  useEffect(() => {
-    if (!solicitacaoMenuCriarGrupo) return;
-
-    const larguraMenu = 190;
-    const alturaMenu = 52;
-    setMenuContexto(null);
-    setMenuContextoGrupo(null);
-    setMenuContextoArea({
-      x: Math.max(
-        8,
-        Math.min(solicitacaoMenuCriarGrupo.x, window.innerWidth - larguraMenu - 8)
-      ),
-      y: Math.max(
-        8,
-        Math.min(solicitacaoMenuCriarGrupo.y, window.innerHeight - alturaMenu - 8)
-      ),
-    });
-  }, [solicitacaoMenuCriarGrupo]);
 
   useEffect(() => {
     const intervalo = window.setInterval(() => {
@@ -366,20 +255,15 @@ export default function LibraryPage({
     const orfaos = idsUnicosInstancias.filter((id) => !idsNosGrupos.has(id));
 
     if (orfaos.length > 0) {
-      const grupoDestinoCriacao = grupoDestinoCriacaoRef.current;
       setState((prev) => {
         const grupos = [...prev.groups];
-        const indiceDestinoSolicitado = grupoDestinoCriacao
-          ? grupos.findIndex((grupo) => grupo.id === grupoDestinoCriacao)
-          : -1;
-        const indiceDestino = indiceDestinoSolicitado >= 0
-          ? indiceDestinoSolicitado
-          : grupos.findIndex((grupo) => grupo.id === "default");
-        if (indiceDestino >= 0) {
-          grupos[indiceDestino] = {
-            ...grupos[indiceDestino],
+        // Adicionar ao grupo padrão
+        const defaultIdx = grupos.findIndex((g) => g.id === "default");
+        if (defaultIdx >= 0) {
+          grupos[defaultIdx] = {
+            ...grupos[defaultIdx],
             instanceIds: deduplicarIds([
-              ...grupos[indiceDestino].instanceIds,
+              ...grupos[defaultIdx].instanceIds,
               ...orfaos,
             ]),
           };
@@ -389,30 +273,40 @@ export default function LibraryPage({
             name: "Instâncias",
             collapsed: false,
             instanceIds: orfaos,
-            ...PREFERENCIAS_GRUPO_PADRAO,
           });
         }
         return { ...prev, groups: grupos };
       });
-      grupoDestinoCriacaoRef.current = null;
     }
 
-    // IDs ausentes permanecem salvos para restaurar os grupos ao trocar a pasta de instâncias.
+    // Limpar IDs de instâncias que não existem mais
+    const idsExistentes = new Set(instances.map((i) => i.id));
+    setState((prev) => ({
+      ...prev,
+      groups: prev.groups.map((g) => ({
+        ...g,
+        instanceIds: deduplicarIds(
+          g.instanceIds.filter((id) => idsExistentes.has(id))
+        ),
+      })),
+    }));
   }, [instances]);
 
   // Ordenar instâncias
   const ordenar = useCallback(
-    (ids: string[], sortKey: SortKey, sortDir: SortDir): Instance[] => {
+    (ids: string[]): Instance[] => {
       const map = new Map(instances.map((i) => [i.id, i]));
       const lista = deduplicarIds(ids)
         .map((id) => map.get(id))
         .filter(Boolean) as Instance[];
 
-      if (sortKey === "manual") return lista;
+      if (state.sortKey === "manual") return lista;
 
       lista.sort((a, b) => {
         let cmp = 0;
-        switch (sortKey) {
+        switch (state.sortKey) {
+          case "manual":
+            break;
           case "name":
             cmp = a.name.localeCompare(b.name);
             break;
@@ -430,12 +324,12 @@ export default function LibraryPage({
             );
             break;
         }
-        return sortDir === "asc" ? cmp : -cmp;
+        return state.sortDir === "asc" ? cmp : -cmp;
       });
 
       return lista;
     },
-    [instances]
+    [instances, state.sortKey, state.sortDir]
   );
 
   // Filtrar por busca
@@ -460,13 +354,7 @@ export default function LibraryPage({
       ...prev,
       groups: [
         ...prev.groups,
-        {
-          id,
-          name: "Novo Grupo",
-          collapsed: false,
-          instanceIds: [],
-          ...PREFERENCIAS_GRUPO_PADRAO,
-        },
+        { id, name: "Novo Grupo", collapsed: false, instanceIds: [] },
       ],
     }));
     setEditandoGrupo(id);
@@ -484,47 +372,6 @@ export default function LibraryPage({
       ),
     }));
     setEditandoGrupo(null);
-  };
-
-  const iniciarRenomeacaoGrupo = (grupo: InstanceGroup) => {
-    setEditandoGrupo(grupo.id);
-    setNomeGrupo(grupo.name);
-    setTimeout(() => inputRef.current?.select(), 50);
-  };
-
-  const escolherIconeGrupo = (grupoId: string) => {
-    grupoIconeAlvoRef.current = grupoId;
-    inputIconeGrupoRef.current?.click();
-  };
-
-  const alterarIconeGrupo = async (evento: React.ChangeEvent<HTMLInputElement>) => {
-    const arquivo = evento.target.files?.[0];
-    const grupoId = grupoIconeAlvoRef.current;
-    evento.target.value = "";
-    if (!arquivo || !grupoId) return;
-
-    try {
-      const icon = await prepararIconeGrupo(arquivo);
-      setState((anterior) => ({
-        ...anterior,
-        groups: anterior.groups.map((grupo) =>
-          grupo.id === grupoId ? { ...grupo, icon } : grupo
-        ),
-      }));
-    } catch (erro) {
-      alert(erro instanceof Error ? erro.message : "Não foi possível alterar o ícone do grupo.");
-    } finally {
-      grupoIconeAlvoRef.current = null;
-    }
-  };
-
-  const alterarFormatoGrupo = (grupoId: string, format: GroupFormat) => {
-    setState((anterior) => ({
-      ...anterior,
-      groups: anterior.groups.map((grupo) =>
-        grupo.id === grupoId ? { ...grupo, format } : grupo
-      ),
-    }));
   };
 
   // Deletar grupo preservando as instâncias em outro grupo disponível
@@ -579,11 +426,11 @@ export default function LibraryPage({
       // Adicionar no grupo alvo
       return {
         ...prev,
+        sortKey: "manual",
         groups: gruposSemItem.map((g) =>
           g.id === targetGroupId
             ? {
                 ...g,
-                sortKey: "manual",
                 instanceIds: deduplicarIds([...g.instanceIds, idArrastado]),
               }
             : g
@@ -593,157 +440,46 @@ export default function LibraryPage({
   };
 
   const moverInstanciaDuranteArrasto = (targetInstanceId: string, targetGroupId: string) => {
-    const instanceId = instanciaArrastadaRef.current;
-    if (!instanceId || instanceId === targetInstanceId) return;
+    if (!arrastoManualAtivo || !draggedId || draggedId === targetInstanceId) return;
 
     setState((prev) => {
-      const grupoOrigem = prev.groups.find((grupo) => grupo.instanceIds.includes(instanceId));
-      const grupoDestinoOriginal = prev.groups.find((grupo) => grupo.id === targetGroupId);
-      const indiceOrigem = grupoOrigem?.instanceIds.indexOf(instanceId) ?? -1;
-      const indiceDestinoOriginal = grupoDestinoOriginal?.instanceIds.indexOf(targetInstanceId) ?? -1;
-      const movendoParaFrenteNoMesmoGrupo =
-        grupoOrigem?.id === targetGroupId &&
-        indiceOrigem >= 0 &&
-        indiceDestinoOriginal >= 0 &&
-        indiceOrigem < indiceDestinoOriginal;
-
       const gruposSemInstancia = prev.groups.map((grupo) => ({
         ...grupo,
-        instanceIds: grupo.instanceIds.filter((id) => id !== instanceId),
+        instanceIds: grupo.instanceIds.filter((id) => id !== draggedId),
       }));
 
       return {
         ...prev,
+        sortKey: "manual",
         groups: gruposSemInstancia.map((grupo) => {
           if (grupo.id !== targetGroupId) return grupo;
 
           const ids = [...grupo.instanceIds];
           const indiceDestino = ids.indexOf(targetInstanceId);
-          const indiceInsercao = indiceDestino < 0
-            ? ids.length
-            : indiceDestino + (movendoParaFrenteNoMesmoGrupo ? 1 : 0);
-          ids.splice(indiceInsercao, 0, instanceId);
-          return { ...grupo, sortKey: "manual", instanceIds: deduplicarIds(ids) };
+          ids.splice(indiceDestino < 0 ? ids.length : indiceDestino, 0, draggedId);
+          return { ...grupo, instanceIds: deduplicarIds(ids) };
         }),
       };
     });
   };
 
   const iniciarArrastoManual = (instanceId: string) => {
-    instanciaArrastadaRef.current = instanceId;
     setDraggedId(instanceId);
     setArrastoManualAtivo(true);
   };
 
   const finalizarArrastoManual = useCallback(() => {
-    instanciaArrastadaRef.current = null;
-    setCursorArrasto(null);
-    setInstanciaDestinoArrastoId(null);
     setArrastoManualAtivo(false);
     setDraggedId(null);
     setDragOverGroup(null);
   }, []);
 
-  const bloquearCliqueAposArrasto = () => {
-    window.addEventListener(
-      "click",
-      (evento) => {
-        evento.preventDefault();
-        evento.stopImmediatePropagation();
-      },
-      { capture: true, once: true }
-    );
-  };
-
-  const prepararArrastoInstancia = (
-    instanceId: string,
-    eventoInicial: React.PointerEvent
-  ) => {
-    if (eventoInicial.button !== 0) return;
-
-    limparArrastoPonteiroRef.current?.();
-    const origemX = eventoInicial.clientX;
-    const origemY = eventoInicial.clientY;
-    let ativo = false;
-    let ultimoDestino = "";
-    let frameCursor: number | null = null;
-    let cursorPendente: CursorArrastoBiblioteca | null = null;
-
-    const atualizarCursor = (x: number, y: number) => {
-      cursorPendente = { tipo: "instancia", id: instanceId, x, y };
-      if (frameCursor !== null) return;
-
-      frameCursor = window.requestAnimationFrame(() => {
-        frameCursor = null;
-        if (cursorPendente) setCursorArrasto(cursorPendente);
-      });
-    };
-
-    const obterDestino = (x: number, y: number) => {
-      const elemento = document.elementFromPoint(x, y) as HTMLElement | null;
-      const card = elemento?.closest<HTMLElement>("[data-instancia-biblioteca-id]");
-      const grupo = elemento?.closest<HTMLElement>("[data-grupo-biblioteca-id]");
-      return {
-        instanceId: card?.dataset.instanciaBibliotecaId || null,
-        groupId: grupo?.dataset.grupoBibliotecaId || null,
-      };
-    };
-
-    const aoMover = (evento: PointerEvent) => {
-      if (!ativo && Math.hypot(evento.clientX - origemX, evento.clientY - origemY) < 6) return;
-      if (!ativo) {
-        ativo = true;
-        window.getSelection()?.removeAllRanges();
-        iniciarArrastoManual(instanceId);
-      }
-
-      evento.preventDefault();
-      atualizarCursor(evento.clientX, evento.clientY);
-      const destino = obterDestino(evento.clientX, evento.clientY);
-      const chaveDestino = `${destino.groupId || ""}:${destino.instanceId || ""}`;
-      if (chaveDestino === ultimoDestino) return;
-      ultimoDestino = chaveDestino;
-
-      setDragOverGroup(destino.groupId);
-      setInstanciaDestinoArrastoId(
-        destino.instanceId && destino.instanceId !== instanceId ? destino.instanceId : null
-      );
-    };
-
-    const limpar = () => {
-      window.removeEventListener("pointermove", aoMover);
-      window.removeEventListener("pointerup", aoSoltar);
-      window.removeEventListener("pointercancel", aoCancelar);
-      if (frameCursor !== null) window.cancelAnimationFrame(frameCursor);
-      frameCursor = null;
-      cursorPendente = null;
-      limparArrastoPonteiroRef.current = null;
-    };
-
-    const aoSoltar = (evento: PointerEvent) => {
-      if (ativo) {
-        const destino = obterDestino(evento.clientX, evento.clientY);
-        if (destino.groupId && destino.instanceId) {
-          moverInstanciaDuranteArrasto(destino.instanceId, destino.groupId);
-        } else if (destino.groupId) {
-          moverInstanciaParaGrupo(instanceId, destino.groupId);
-        }
-        bloquearCliqueAposArrasto();
-      }
-      finalizarArrastoManual();
-      limpar();
-    };
-
-    const aoCancelar = () => {
-      finalizarArrastoManual();
-      limpar();
-    };
-
-    window.addEventListener("pointermove", aoMover, { passive: false });
-    window.addEventListener("pointerup", aoSoltar);
-    window.addEventListener("pointercancel", aoCancelar);
-    limparArrastoPonteiroRef.current = limpar;
-  };
+  useEffect(() => {
+    if (!arrastoManualAtivo) return;
+    const aoSoltarMouse = () => finalizarArrastoManual();
+    window.addEventListener("mouseup", aoSoltarMouse);
+    return () => window.removeEventListener("mouseup", aoSoltarMouse);
+  }, [arrastoManualAtivo, finalizarArrastoManual]);
 
   useEffect(() => {
     if (!arrastoManualAtivo) return;
@@ -758,34 +494,36 @@ export default function LibraryPage({
   }, [arrastoManualAtivo]);
 
   useEffect(() => {
-    if (!menuContexto && !menuContextoGrupo && !menuContextoArea) return;
+    if (!menuContexto) return;
     const fecharAoPressionarEscape = (evento: KeyboardEvent) => {
-      if (evento.key === "Escape") {
-        setMenuContexto(null);
-        setMenuContextoGrupo(null);
-        setMenuContextoArea(null);
-      }
+      if (evento.key === "Escape") setMenuContexto(null);
     };
-    const fecharAoRolar = () => {
-      setMenuContexto(null);
-      setMenuContextoGrupo(null);
-      setMenuContextoArea(null);
-    };
+    const fecharAoRolar = () => setMenuContexto(null);
     window.addEventListener("keydown", fecharAoPressionarEscape);
     window.addEventListener("scroll", fecharAoRolar, true);
     return () => {
       window.removeEventListener("keydown", fecharAoPressionarEscape);
       window.removeEventListener("scroll", fecharAoRolar, true);
     };
-  }, [menuContexto, menuContextoArea, menuContextoGrupo]);
+  }, [menuContexto]);
+
+  const handleGrupoMouseEnter = (groupId: string) => {
+    if (!arrastoManualAtivo || !draggedId) return;
+    setDragOverGroup(groupId);
+  };
+
+  const handleGrupoMouseUp = (groupId: string) => {
+    if (!arrastoManualAtivo || !draggedId) return;
+    moverInstanciaParaGrupo(draggedId, groupId);
+    finalizarArrastoManual();
+  };
 
   const moverGrupoDuranteArrasto = (grupoDestino: string) => {
-    const grupoOrigem = grupoArrastadoRef.current;
-    if (!grupoOrigem || grupoOrigem === grupoDestino) return;
+    if (!grupoArrastadoId || grupoArrastadoId === grupoDestino) return;
 
     setState((anterior) => {
       const grupos = [...anterior.groups];
-      const indiceOrigem = grupos.findIndex((grupo) => grupo.id === grupoOrigem);
+      const indiceOrigem = grupos.findIndex((grupo) => grupo.id === grupoArrastadoId);
       const indiceDestino = grupos.findIndex((grupo) => grupo.id === grupoDestino);
       if (indiceOrigem < 0 || indiceDestino < 0 || indiceOrigem === indiceDestino) return anterior;
 
@@ -798,40 +536,38 @@ export default function LibraryPage({
   useEffect(() => {
     if (!grupoArrastadoId) return;
 
+    const finalizarArrastoGrupo = () => {
+      setGrupoArrastadoId(null);
+    };
     const cursorAnterior = document.body.style.cursor;
     const userSelectAnterior = document.body.style.userSelect;
     document.body.style.cursor = "grabbing";
     document.body.style.userSelect = "none";
+    window.addEventListener("mouseup", finalizarArrastoGrupo);
 
     return () => {
+      window.removeEventListener("mouseup", finalizarArrastoGrupo);
       document.body.style.cursor = cursorAnterior;
       document.body.style.userSelect = userSelectAnterior;
     };
   }, [grupoArrastadoId]);
 
   // Alternar ordenação
-  const alternarSortGrupo = (grupoId: string, key: SortKey) => {
+  const alternarSort = (key: SortKey) => {
     setState((prev) => ({
       ...prev,
-      groups: prev.groups.map((grupo) =>
-        grupo.id === grupoId
-          ? {
-              ...grupo,
-              sortKey: key,
-              sortDir: grupo.sortKey === key && grupo.sortDir === "asc" ? "desc" : "asc",
-            }
-          : grupo
-      ),
+      sortKey: key,
+      sortDir: prev.sortKey === key && prev.sortDir === "asc" ? "desc" : "asc",
     }));
   };
 
-  const alterarModoExibicaoGrupo = (grupoId: string, viewMode: ViewMode) => {
-    setState((prev) => ({
-      ...prev,
-      groups: prev.groups.map((grupo) =>
-        grupo.id === grupoId ? { ...grupo, viewMode } : grupo
-      ),
-    }));
+  // Labels de sort
+  const sortLabels: Record<SortKey, string> = {
+    manual: "Manual",
+    name: "Nome",
+    last_played: "Último jogado",
+    version: "Versão",
+    loader: "Loader",
   };
 
   const carregarInstanciasImportaveis = async (
@@ -861,7 +597,6 @@ export default function LibraryPage({
 
   const abrirModalImportacao = () => {
     if (importandoInstancias) return;
-    grupoDestinoCriacaoRef.current = null;
     setModalEscolhaImportacaoAberto(true);
   };
 
@@ -992,7 +727,7 @@ export default function LibraryPage({
 
       if (resultado.sucesso) {
         alert(`✅ ${resultado.mensagem}`);
-        await onAtualizarInstancias();
+        window.location.reload();
       } else {
         alert(`❌ ${resultado.mensagem}`);
       }
@@ -1016,105 +751,12 @@ export default function LibraryPage({
   const abrirMenuContexto = (evento: React.MouseEvent, instancia: Instance) => {
     evento.preventDefault();
     evento.stopPropagation();
-    setMenuContextoGrupo(null);
-    setMenuContextoArea(null);
     selecionarInstancia(instancia);
 
     const larguraMenu = 248;
     const alturaMenu = Math.min(430, 250 + state.groups.length * 34);
     setMenuContexto({
       instancia,
-      x: Math.max(8, Math.min(evento.clientX, window.innerWidth - larguraMenu - 8)),
-      y: Math.max(8, Math.min(evento.clientY, window.innerHeight - alturaMenu - 8)),
-    });
-  };
-
-  const prepararArrastoGrupo = (grupoId: string, eventoInicial: React.PointerEvent) => {
-    if (eventoInicial.button !== 0) return;
-    const alvo = eventoInicial.target as HTMLElement;
-    if (alvo.closest("button, input")) return;
-
-    limparArrastoPonteiroRef.current?.();
-    const origemX = eventoInicial.clientX;
-    const origemY = eventoInicial.clientY;
-    let ativo = false;
-    let ultimoGrupoDestino = "";
-
-    const aoMover = (evento: PointerEvent) => {
-      if (!ativo && Math.hypot(evento.clientX - origemX, evento.clientY - origemY) < 6) return;
-      if (!ativo) {
-        ativo = true;
-        window.getSelection()?.removeAllRanges();
-        grupoArrastadoRef.current = grupoId;
-        setGrupoArrastadoId(grupoId);
-      }
-
-      evento.preventDefault();
-      setCursorArrasto({ tipo: "grupo", id: grupoId, x: evento.clientX, y: evento.clientY });
-      const elemento = document.elementFromPoint(evento.clientX, evento.clientY) as HTMLElement | null;
-      const grupoDestino = elemento
-        ?.closest<HTMLElement>("[data-grupo-biblioteca-id]")
-        ?.dataset.grupoBibliotecaId;
-      if (!grupoDestino || grupoDestino === ultimoGrupoDestino) return;
-      ultimoGrupoDestino = grupoDestino;
-      moverGrupoDuranteArrasto(grupoDestino);
-    };
-
-    const limpar = () => {
-      window.removeEventListener("pointermove", aoMover);
-      window.removeEventListener("pointerup", aoFinalizar);
-      window.removeEventListener("pointercancel", aoFinalizar);
-      limparArrastoPonteiroRef.current = null;
-    };
-
-    const aoFinalizar = () => {
-      if (ativo) bloquearCliqueAposArrasto();
-      grupoArrastadoRef.current = null;
-      setCursorArrasto(null);
-      setGrupoArrastadoId(null);
-      limpar();
-    };
-
-    window.addEventListener("pointermove", aoMover, { passive: false });
-    window.addEventListener("pointerup", aoFinalizar);
-    window.addEventListener("pointercancel", aoFinalizar);
-    limparArrastoPonteiroRef.current = limpar;
-  };
-
-  useEffect(() => () => limparArrastoPonteiroRef.current?.(), []);
-
-  const abrirMenuContextoGrupo = (evento: React.MouseEvent, grupo: InstanceGroup) => {
-    evento.preventDefault();
-    evento.stopPropagation();
-    setMenuContexto(null);
-    setMenuContextoArea(null);
-
-    const larguraMenu = 276;
-    const alturaMenu = 290;
-    setMenuContextoGrupo({
-      grupo,
-      x: Math.max(8, Math.min(evento.clientX, window.innerWidth - larguraMenu - 8)),
-      y: Math.max(8, Math.min(evento.clientY, window.innerHeight - alturaMenu - 8)),
-    });
-  };
-
-  const abrirMenuContextoArea = (evento: React.MouseEvent) => {
-    const alvo = evento.target as HTMLElement;
-    const camadaMenuArea = alvo.closest("[data-camada-menu-area='true']");
-    if (
-      !camadaMenuArea &&
-      alvo.closest("button, input, textarea, select, [role='dialog'], [aria-modal='true']")
-    ) {
-      return;
-    }
-
-    evento.preventDefault();
-    setMenuContexto(null);
-    setMenuContextoGrupo(null);
-
-    const larguraMenu = 190;
-    const alturaMenu = 52;
-    setMenuContextoArea({
       x: Math.max(8, Math.min(evento.clientX, window.innerWidth - larguraMenu - 8)),
       y: Math.max(8, Math.min(evento.clientY, window.innerHeight - alturaMenu - 8)),
     });
@@ -1137,12 +779,6 @@ export default function LibraryPage({
   };
 
   const totalSucessosImportacao = resultadoImportacao.filter((item) => item.sucesso).length;
-  const instanciaNoCursor = cursorArrasto?.tipo === "instancia"
-    ? instances.find((instancia) => instancia.id === cursorArrasto.id) || null
-    : null;
-  const grupoNoCursor = cursorArrasto?.tipo === "grupo"
-    ? state.groups.find((grupo) => grupo.id === cursorArrasto.id) || null
-    : null;
   const nomeLauncher = (launcher: string) =>
     launcher === "prism"
       ? "Prism Launcher"
@@ -1153,70 +789,7 @@ export default function LibraryPage({
           : launcher;
 
   return (
-    <div
-      className="flex min-h-[calc(100dvh-12rem)] flex-col gap-4"
-      onContextMenu={abrirMenuContextoArea}
-    >
-      <input
-        ref={inputIconeGrupoRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        className="hidden"
-        onChange={(evento) => void alterarIconeGrupo(evento)}
-      />
-
-      <AnimatePresence>
-        {cursorArrasto && (instanciaNoCursor || grupoNoCursor) && (
-          <motion.div
-            key={`${cursorArrasto.tipo}:${cursorArrasto.id}`}
-            initial={{ opacity: 0, scale: 0.92 }}
-            animate={{ opacity: 0.94, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.92 }}
-            transition={{ duration: 0.08 }}
-            aria-hidden="true"
-            className={cn(
-              "pointer-events-none fixed z-[100] flex w-56 select-none items-center gap-3",
-              "border border-emerald-300/45 bg-[#111113]/95 px-3 py-2 shadow-2xl",
-              "backdrop-blur-sm"
-            )}
-            style={{
-              left: Math.max(8, Math.min(cursorArrasto.x + 16, window.innerWidth - 232)),
-              top: Math.max(8, Math.min(cursorArrasto.y + 16, window.innerHeight - 72)),
-            }}
-          >
-            {instanciaNoCursor ? (
-              <img
-                src={instanciaNoCursor.icon || ICONE_DOME_LAUNCHER}
-                alt=""
-                className="h-9 w-9 shrink-0 border border-white/10 bg-[#171719] object-contain p-1"
-              />
-            ) : grupoNoCursor?.icon ? (
-              <img
-                src={grupoNoCursor.icon}
-                alt=""
-                className="h-9 w-9 shrink-0 object-contain"
-              />
-            ) : (
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center border border-white/10 bg-white/5">
-                <FolderOpen size={17} className="text-emerald-200/70" />
-              </div>
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-black text-white">
-                {instanciaNoCursor?.name || grupoNoCursor?.name}
-              </p>
-              <p className="mt-0.5 truncate text-[10px] text-white/40">
-                {instanciaNoCursor
-                  ? `${instanciaNoCursor.loader_type || instanciaNoCursor.mc_type} ${instanciaNoCursor.version}`
-                  : `${grupoNoCursor?.instanceIds.filter((id) =>
-                      idsInstanciasVisiveis.has(id)
-                    ).length || 0} instâncias`}
-              </p>
-            </div>
-            <span className="h-2 w-2 shrink-0 bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.8)]" />
-          </motion.div>
-        )}
-      </AnimatePresence>
+    <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex items-center gap-3">
         {/* Busca */}
@@ -1239,6 +812,84 @@ export default function LibraryPage({
               <X size={14} />
             </button>
           )}
+        </div>
+
+        {/* Ordenação */}
+        <div className="relative">
+          <button
+            onClick={() =>
+              setMenuAberto(menuAberto === "sort" ? null : "sort")
+            }
+            className="flex items-center gap-1.5 px-3 py-2 bg-white/3 border border-white/5 rounded-xl text-xs text-white/40 hover:text-white/60 hover:bg-white/5 transition-all"
+          >
+            <ArrowUpDown size={13} />
+            {sortLabels[state.sortKey]}
+          </button>
+          <AnimatePresence>
+            {menuAberto === "sort" && (
+              <motion.div
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 4 }}
+                className="absolute right-0 top-full mt-1 bg-[#1a1a1c] border border-white/10 rounded-xl p-1 z-50 min-w-[140px] shadow-xl"
+              >
+                {(Object.keys(sortLabels) as SortKey[]).map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      alternarSort(key);
+                      setMenuAberto(null);
+                    }}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all ${
+                      state.sortKey === key
+                        ? "text-emerald-400 bg-emerald-500/10"
+                        : "text-white/50 hover:bg-white/5 hover:text-white/70"
+                    }`}
+                  >
+                    {sortLabels[key]}
+                    {state.sortKey === key && key !== "manual" && (
+                      <span className="ml-auto text-[10px] opacity-50">
+                        {state.sortDir === "asc" ? "↑" : "↓"}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Novo grupo */}
+        <button
+          onClick={criarGrupo}
+          className="flex items-center gap-1.5 px-3 py-2 bg-white/3 border border-white/5 rounded-xl text-xs text-white/40 hover:text-white/60 hover:bg-white/5 transition-all"
+          title="Criar grupo"
+        >
+          <FolderPlus size={13} />
+        </button>
+
+        {/* View mode */}
+        <div className="flex bg-white/3 border border-white/5 rounded-xl overflow-hidden">
+          <button
+            onClick={() => setState((p) => ({ ...p, viewMode: "grid" }))}
+            className={`p-2 transition-all ${
+              state.viewMode === "grid"
+                ? "text-emerald-400 bg-emerald-500/10"
+                : "text-white/30 hover:text-white/50"
+            }`}
+          >
+            <LayoutGrid size={14} />
+          </button>
+          <button
+            onClick={() => setState((p) => ({ ...p, viewMode: "list" }))}
+            className={`p-2 transition-all ${
+              state.viewMode === "list"
+                ? "text-emerald-400 bg-emerald-500/10"
+                : "text-white/30 hover:text-white/50"
+            }`}
+          >
+            <List size={14} />
+          </button>
         </div>
 
         {/* Importar / Exportar */}
@@ -1269,6 +920,13 @@ export default function LibraryPage({
           Exportar
         </button>
 
+        <button
+          onClick={onCreateNew}
+          className="flex items-center gap-1.5 px-3 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400 hover:bg-emerald-500/20 transition-all font-bold"
+        >
+          <Plus size={13} />
+          Nova
+        </button>
       </div>
 
       <AnimatePresence>
@@ -1311,48 +969,41 @@ export default function LibraryPage({
       </AnimatePresence>
 
       {/* Grupos e instâncias */}
-      <div className="min-h-40 flex-1">
-        {instances.length === 0 && instanciasEmImportacao.length === 0 ? (
-          <div
-          onContextMenu={(evento) => {
-            const grupoPadrao = state.groups[0];
-            if (grupoPadrao) abrirMenuContextoGrupo(evento, grupoPadrao);
-          }}
-          className="py-20 flex flex-col items-center justify-center text-white/20 border-2 border-dotted border-[color:var(--cor-grupos)] rounded-2xl"
-          >
-            <Box size={48} className="mb-4 opacity-20" />
-            <p className="font-bold">Nenhuma instância encontrada</p>
-            <p className="text-sm mt-1">
-              Clique com o botão direito nesta área para criar uma instância
-            </p>
-            <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-              <button
-                onClick={abrirModalImportacao}
-                disabled={importandoInstancias}
-                className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/15 rounded-xl text-white/70 text-sm font-bold hover:bg-white/10 hover:text-white transition-all disabled:opacity-40"
-              >
-                <Upload size={14} />
-                Importar Instância
-              </button>
-            </div>
+      {instances.length === 0 && instanciasEmImportacao.length === 0 ? (
+        <div className="py-20 flex flex-col items-center justify-center text-white/20 border-2 border-dashed border-white/5 rounded-2xl">
+          <Box size={48} className="mb-4 opacity-20" />
+          <p className="font-bold">Nenhuma instância encontrada</p>
+          <p className="text-sm mt-1">
+            Crie uma nova instância ou importe uma existente
+          </p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <button
+              onClick={onCreateNew}
+              className="flex items-center gap-2 px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 text-sm font-bold hover:bg-emerald-500/20 transition-all"
+            >
+              <Plus size={14} />
+              Criar Instância
+            </button>
+            <button
+              onClick={abrirModalImportacao}
+              disabled={importandoInstancias}
+              className="flex items-center gap-2 px-4 py-2 bg-white/5 border border-white/15 rounded-xl text-white/70 text-sm font-bold hover:bg-white/10 hover:text-white transition-all disabled:opacity-40"
+            >
+              <Upload size={14} />
+              Importar Instância
+            </button>
           </div>
-        ) : (
-          <LayoutGroup id="grupos-biblioteca">
-          <div className="grid grid-cols-12 items-start gap-2">
+        </div>
+      ) : (
+        <div className="space-y-2">
           {instanciasEmImportacao.length > 0 && (
-            <div className="col-span-12">
-              <SecaoImportacoesEmAndamento
-                instancias={instanciasEmImportacao}
-                viewMode="grid"
-              />
-            </div>
+            <SecaoImportacoesEmAndamento
+              instancias={instanciasEmImportacao}
+              viewMode={state.viewMode}
+            />
           )}
           {state.groups.map((grupo) => {
-            const instanciasOrdenadas = ordenar(
-              grupo.instanceIds,
-              grupo.sortKey,
-              grupo.sortDir
-            );
+            const instanciasOrdenadas = ordenar(grupo.instanceIds);
             const instanciasFiltradas = filtrar(instanciasOrdenadas);
 
             // Se filtrando e grupo vazio, ocultar
@@ -1363,7 +1014,7 @@ export default function LibraryPage({
                 key={grupo.id}
                 grupo={grupo}
                 instances={instanciasFiltradas}
-                viewMode={grupo.viewMode}
+                viewMode={state.viewMode}
                 editando={editandoGrupo === grupo.id}
                 nomeEdit={nomeGrupo}
                 dragOver={dragOverGroup === grupo.id}
@@ -1371,32 +1022,44 @@ export default function LibraryPage({
                   editandoGrupo === grupo.id ? inputRef : undefined
                 }
                 onToggle={() => toggleGrupo(grupo.id)}
+                onRenomear={() => {
+                  setEditandoGrupo(grupo.id);
+                  setNomeGrupo(grupo.name);
+                  setTimeout(() => inputRef.current?.select(), 50);
+                }}
                 onNomeChange={setNomeGrupo}
                 onNomeSalvar={() => salvarNomeGrupo(grupo.id)}
-                onRenomear={() => iniciarRenomeacaoGrupo(grupo)}
-                onAlterarOrdenacao={(key) => alternarSortGrupo(grupo.id, key)}
-                onAlterarModoExibicao={(viewMode) =>
-                  alterarModoExibicaoGrupo(grupo.id, viewMode)
-                }
-                onAbrirMenuContextoGrupo={(evento) => abrirMenuContextoGrupo(evento, grupo)}
+                podeDeletar={state.groups.length > 1}
+                onDeletar={() => setGrupoExclusao(grupo)}
                 onSelect={selecionarInstancia}
                 onAbrirGerenciador={onAbrirGerenciadorInstancia}
                 onAbrirMenuContexto={abrirMenuContexto}
-                onIniciarArrasto={prepararArrastoInstancia}
-                onIniciarArrastoGrupo={(evento) => prepararArrastoGrupo(grupo.id, evento)}
+                onIniciarArrasto={iniciarArrastoManual}
+                onEntrarInstanciaDuranteArrasto={(instanceId) =>
+                  moverInstanciaDuranteArrasto(instanceId, grupo.id)
+                }
+                onMouseEnterGrupo={() => handleGrupoMouseEnter(grupo.id)}
+                onMouseUpGrupo={() => handleGrupoMouseUp(grupo.id)}
+                onFinalizarArrasto={finalizarArrastoManual}
+                onIniciarArrastoGrupo={(evento) => {
+                  if (evento.button !== 0) return;
+                  evento.preventDefault();
+                  evento.stopPropagation();
+                  setGrupoArrastadoId(grupo.id);
+                }}
+                onEntrarGrupoDestino={() => {
+                  if (!grupoArrastadoId) return;
+                  moverGrupoDuranteArrasto(grupo.id);
+                }}
                 grupoSendoArrastado={grupoArrastadoId === grupo.id}
-                instanceArrastadaId={draggedId}
-                instanciaDestinoArrastoId={instanciaDestinoArrastoId}
                 instanciaSelecionadaId={instanciaSelecionadaId}
                 instanciaAtivaId={instanciaAtivaId}
                 agoraSegundos={agoraSegundos}
               />
             );
           })}
-          </div>
-          </LayoutGroup>
-        )}
-      </div>
+        </div>
+      )}
 
       <AnimatePresence>
         {grupoExclusao && (
@@ -1428,9 +1091,8 @@ export default function LibraryPage({
               <div className="px-4 py-4">
                 <p className="text-xs leading-relaxed text-white/55">
                   O grupo <span className="font-bold text-white/85">{grupoExclusao.name}</span> será
-                  excluído. As {grupoExclusao.instanceIds.filter((id) =>
-                    idsInstanciasVisiveis.has(id)
-                  ).length} instâncias serão movidas para outro grupo e nenhum arquivo será apagado.
+                  excluído. As {grupoExclusao.instanceIds.length} instâncias serão movidas para outro
+                  grupo e nenhum arquivo será apagado.
                 </p>
               </div>
               <div className="flex justify-end gap-2 border-t border-white/8 px-4 py-3">
@@ -1492,81 +1154,6 @@ export default function LibraryPage({
               }}
               onExcluir={() => excluirPeloMenu(menuContexto.instancia)}
             />
-          </>
-        )}
-
-        {menuContextoGrupo && (
-          <>
-            <motion.button
-              aria-label="Fechar menu do grupo"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[79] cursor-default"
-              onClick={() => setMenuContextoGrupo(null)}
-            />
-            <MenuContextoGrupoBiblioteca
-              menu={menuContextoGrupo}
-              podeExcluir={state.groups.length > 1}
-              onCriarInstancia={() => {
-                grupoDestinoCriacaoRef.current = menuContextoGrupo.grupo.id;
-                setMenuContextoGrupo(null);
-                onCreateNew();
-              }}
-              onRenomear={() => {
-                const grupo = menuContextoGrupo.grupo;
-                setMenuContextoGrupo(null);
-                iniciarRenomeacaoGrupo(grupo);
-              }}
-              onTrocarIcone={() => {
-                const grupoId = menuContextoGrupo.grupo.id;
-                setMenuContextoGrupo(null);
-                escolherIconeGrupo(grupoId);
-              }}
-              onAlterarFormato={(formato) => {
-                alterarFormatoGrupo(menuContextoGrupo.grupo.id, formato);
-                setMenuContextoGrupo(null);
-              }}
-              onExcluir={() => {
-                setGrupoExclusao(menuContextoGrupo.grupo);
-                setMenuContextoGrupo(null);
-              }}
-            />
-          </>
-        )}
-
-        {menuContextoArea && (
-          <>
-            <motion.button
-              data-camada-menu-area="true"
-              aria-label="Fechar menu da área da biblioteca"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[79] cursor-default"
-              onClick={() => setMenuContextoArea(null)}
-            />
-            <motion.div
-              initial={{ opacity: 0, scale: 0.96, y: -4 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: -4 }}
-              transition={{ duration: 0.1 }}
-              className="fixed z-[80] w-[182px] rounded-xl border border-white/15 bg-[#171719] p-1.5 shadow-2xl"
-              style={{ left: menuContextoArea.x, top: menuContextoArea.y }}
-              onMouseDown={(evento) => evento.stopPropagation()}
-              onContextMenu={(evento) => evento.preventDefault()}
-            >
-              <button
-                onClick={() => {
-                  setMenuContextoArea(null);
-                  criarGrupo();
-                }}
-                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/10"
-              >
-                <FolderPlus size={13} />
-                Criar grupo
-              </button>
-            </motion.div>
           </>
         )}
       </AnimatePresence>
@@ -2030,143 +1617,6 @@ function MenuGerenciamentoInstancia({
   );
 }
 
-function MenuContextoGrupoBiblioteca({
-  menu,
-  podeExcluir,
-  onCriarInstancia,
-  onRenomear,
-  onTrocarIcone,
-  onAlterarFormato,
-  onExcluir,
-}: {
-  menu: MenuContextoGrupo;
-  podeExcluir: boolean;
-  onCriarInstancia: () => void;
-  onRenomear: () => void;
-  onTrocarIcone: () => void;
-  onAlterarFormato: (formato: GroupFormat) => void;
-  onExcluir: () => void;
-}) {
-  const classeItem =
-    "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-xs font-semibold transition-colors";
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.96, y: -4 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96, y: -4 }}
-      transition={{ duration: 0.1 }}
-      className="fixed z-[80] w-[268px] rounded-xl border border-white/15 bg-[#171719] p-1.5 shadow-2xl"
-      style={{ left: menu.x, top: menu.y }}
-      onMouseDown={(evento) => evento.stopPropagation()}
-      onContextMenu={(evento) => evento.preventDefault()}
-    >
-      <div className="border-b border-white/8 px-3 pb-2 pt-1.5">
-        <p className="truncate text-xs font-black text-white">{menu.grupo.name}</p>
-        <p className="mt-0.5 text-[10px] text-white/35">Ações do grupo</p>
-      </div>
-      <div className="space-y-0.5 py-1">
-        <button
-          onClick={onCriarInstancia}
-          className={cn(classeItem, "text-emerald-300 hover:bg-emerald-500/10")}
-        >
-          <Plus size={13} />
-          Criar instância
-        </button>
-        <button
-          onClick={onRenomear}
-          className={cn(classeItem, "text-white/70 hover:bg-white/7 hover:text-white")}
-        >
-          <Pencil size={13} />
-          Renomear grupo
-        </button>
-        <button
-          onClick={onTrocarIcone}
-          className={cn(classeItem, "text-white/70 hover:bg-white/7 hover:text-white")}
-        >
-          <ImageIcon size={13} />
-          {menu.grupo.icon ? "Trocar ícone" : "Escolher ícone"}
-        </button>
-        <div className="mt-1 border-t border-white/8 px-2.5 pb-2 pt-2.5">
-          <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wide text-white/35">
-            <LayoutGrid size={11} />
-            Formato do grupo
-          </div>
-          <div className="grid grid-cols-4 gap-1.5">
-            {(["full", "wide", "half", "compact"] as GroupFormat[]).map((formato) => {
-              const selecionado = (menu.grupo.format || "full") === formato;
-              const rotulos: Record<GroupFormat, string> = {
-                full: "Inteiro",
-                wide: "2/3",
-                half: "Metade",
-                compact: "1/3",
-              };
-
-              return (
-                <button
-                  key={formato}
-                  onClick={() => onAlterarFormato(formato)}
-                  title={rotulos[formato]}
-                  aria-label={`Formato ${rotulos[formato]}`}
-                  className={cn(
-                    "relative h-12 border p-1.5 transition-colors",
-                    selecionado
-                      ? "border-emerald-400/55 bg-emerald-400/10"
-                      : "border-white/12 bg-white/3 hover:border-white/25 hover:bg-white/6"
-                  )}
-                >
-                  <MiniaturaFormatoGrupo formato={formato} />
-                  {selecionado && (
-                    <span className="absolute right-0.5 top-0.5 text-emerald-300">
-                      <Check size={8} />
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <button
-          onClick={onExcluir}
-          disabled={!podeExcluir}
-          title={podeExcluir ? "Excluir grupo" : "É necessário manter pelo menos um grupo"}
-          className={cn(
-            classeItem,
-            podeExcluir
-              ? "text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
-              : "cursor-not-allowed text-white/20",
-          )}
-        >
-          <Trash2 size={13} />
-          Excluir grupo
-        </button>
-      </div>
-    </motion.div>
-  );
-}
-
-function MiniaturaFormatoGrupo({ formato }: { formato: GroupFormat }) {
-  const larguraAtiva: Record<GroupFormat, string> = {
-    full: "col-span-12",
-    wide: "col-span-8",
-    half: "col-span-6",
-    compact: "col-span-4",
-  };
-
-  return (
-    <span className="grid h-full grid-cols-12 gap-0.5" aria-hidden="true">
-      <span className={cn("border border-emerald-300/45 bg-emerald-300/20", larguraAtiva[formato])} />
-      {formato !== "full" && <span className="col-span-4 border border-white/8 bg-white/4" />}
-      {(formato === "half" || formato === "compact") && (
-        <span className="col-span-2 border border-white/8 bg-white/4" />
-      )}
-      {formato === "compact" && (
-        <span className="col-span-2 border border-white/8 bg-white/4" />
-      )}
-    </span>
-  );
-}
-
 // ===== WIDGET DE GRUPO =====
 function GrupoWidget({
   grupo,
@@ -2177,20 +1627,22 @@ function GrupoWidget({
   dragOver,
   inputRef,
   onToggle,
+  onRenomear,
   onNomeChange,
   onNomeSalvar,
-  onRenomear,
-  onAlterarOrdenacao,
-  onAlterarModoExibicao,
-  onAbrirMenuContextoGrupo,
+  podeDeletar,
+  onDeletar,
   onSelect,
   onAbrirGerenciador,
   onAbrirMenuContexto,
   onIniciarArrasto,
+  onEntrarInstanciaDuranteArrasto,
+  onMouseEnterGrupo,
+  onMouseUpGrupo,
+  onFinalizarArrasto,
   onIniciarArrastoGrupo,
+  onEntrarGrupoDestino,
   grupoSendoArrastado,
-  instanceArrastadaId,
-  instanciaDestinoArrastoId,
   instanciaSelecionadaId,
   instanciaAtivaId,
   agoraSegundos,
@@ -2203,57 +1655,53 @@ function GrupoWidget({
   dragOver: boolean;
   inputRef?: React.RefObject<HTMLInputElement | null>;
   onToggle: () => void;
+  onRenomear: () => void;
   onNomeChange: (v: string) => void;
   onNomeSalvar: () => void;
-  onRenomear: () => void;
-  onAlterarOrdenacao: (key: SortKey) => void;
-  onAlterarModoExibicao: (viewMode: ViewMode) => void;
-  onAbrirMenuContextoGrupo: (evento: React.MouseEvent) => void;
+  podeDeletar: boolean;
+  onDeletar: () => void;
   onSelect: (instance: Instance) => void;
   onAbrirGerenciador: (instance: Instance) => void;
   onAbrirMenuContexto: (evento: React.MouseEvent, instance: Instance) => void;
-  onIniciarArrasto: (id: string, evento: React.PointerEvent) => void;
-  onIniciarArrastoGrupo: (evento: React.PointerEvent) => void;
+  onIniciarArrasto: (id: string) => void;
+  onEntrarInstanciaDuranteArrasto: (id: string) => void;
+  onMouseEnterGrupo: () => void;
+  onMouseUpGrupo: () => void;
+  onFinalizarArrasto: () => void;
+  onIniciarArrastoGrupo: (evento: React.MouseEvent) => void;
+  onEntrarGrupoDestino: () => void;
   grupoSendoArrastado: boolean;
-  instanceArrastadaId: string | null;
-  instanciaDestinoArrastoId: string | null;
   instanciaSelecionadaId: string | null;
   instanciaAtivaId: string | null;
   agoraSegundos: number;
 }) {
-  const [menuOrdenacaoAberto, setMenuOrdenacaoAberto] = useState(false);
-
   return (
     <motion.div
       layout="position"
-      transition={{
-        layout: {
-          type: "spring",
-          stiffness: 190,
-          damping: 28,
-          mass: 0.9,
-        },
+      transition={{ layout: { duration: 0.16, ease: "easeOut" } }}
+      onMouseEnter={() => {
+        onMouseEnterGrupo();
+        onEntrarGrupoDestino();
       }}
-      onContextMenu={onAbrirMenuContextoGrupo}
-      data-grupo-biblioteca-id={grupo.id}
-      style={{ borderColor: "var(--cor-grupos)" }}
-      className={cn(
-        "col-span-12 rounded-xl border border-dotted transition-[border-color,background-color,opacity] duration-300",
-        grupo.format === "wide" && "lg:col-span-8",
-        grupo.format === "half" && "md:col-span-6",
-        grupo.format === "compact" && "md:col-span-6 xl:col-span-4",
-        dragOver ? "bg-emerald-500/5" : "bg-transparent",
-        grupoSendoArrastado ? "opacity-45" : "opacity-100",
-      )}
+      onMouseUp={onMouseUpGrupo}
+      className={`rounded-xl border transition-all ${
+        dragOver
+          ? "border-emerald-500/30 bg-emerald-500/5"
+          : "border-transparent"
+      } ${grupoSendoArrastado ? "opacity-45" : "opacity-100"}`}
     >
       {/* Header do grupo */}
-      <div
-        onPointerDown={onIniciarArrastoGrupo}
-        className={cn(
-          "group/header flex items-center gap-1.5 px-2 py-1.5",
-          editando ? "cursor-default" : "cursor-grab select-none active:cursor-grabbing"
-        )}
-      >
+      <div className="flex items-center gap-2 py-1.5 px-1 group/header">
+        <div
+          onMouseDown={onIniciarArrastoGrupo}
+          className={cn(
+            "cursor-grab text-white/15 transition-colors hover:text-white/45",
+            "active:cursor-grabbing"
+          )}
+          title="Arrastar grupo"
+        >
+          <GripVertical size={12} />
+        </div>
         <button
           onClick={onToggle}
           className="p-1 text-white/25 hover:text-white/50 transition-colors"
@@ -2285,20 +1733,8 @@ function GrupoWidget({
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-1">
-            {grupo.icon ? (
-              <img src={grupo.icon} alt="" className="h-4 w-4 shrink-0 object-contain" />
-            ) : (
-              <FolderOpen size={13} className="text-white/20" />
-            )}
-            <span
-              className="cursor-text text-xs font-bold uppercase tracking-wider text-white/40"
-              title="Clique duas vezes para renomear"
-              onDoubleClick={(evento) => {
-                evento.preventDefault();
-                evento.stopPropagation();
-                onRenomear();
-              }}
-            >
+            <FolderOpen size={13} className="text-white/20" />
+            <span className="text-xs font-bold text-white/40 uppercase tracking-wider">
               {grupo.name}
             </span>
             <span className="text-[10px] text-white/15 font-medium">
@@ -2307,100 +1743,25 @@ function GrupoWidget({
           </div>
         )}
 
-        <div
-          className="ml-auto flex shrink-0 items-center gap-2"
-          onPointerDown={(evento) => evento.stopPropagation()}
-        >
-          <div className="relative">
+        {/* Ações do grupo */}
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={onRenomear}
+            className="p-1 text-white/20 hover:text-white/40 transition-colors"
+            title="Renomear grupo"
+          >
+            <Pencil size={11} />
+          </button>
+          {podeDeletar && (
             <button
-              type="button"
-              onClick={(evento) => {
-                evento.stopPropagation();
-                setMenuOrdenacaoAberto((aberto) => !aberto);
-              }}
-              className={cn(
-                "flex items-center gap-1.5 rounded-lg border border-white/5 bg-white/3 px-2 py-1.5",
-                "text-[10px] text-white/40 transition-colors hover:bg-white/5 hover:text-white/65"
-              )}
-              aria-expanded={menuOrdenacaoAberto}
-              aria-label={`Ordenar grupo ${grupo.name}`}
+              onClick={onDeletar}
+              className="p-1 text-white/25 hover:text-red-400 transition-colors"
+              title="Excluir grupo"
             >
-              <ArrowUpDown size={11} />
-              {ROTULOS_ORDENACAO[grupo.sortKey]}
+              <Trash2 size={11} />
             </button>
-            <AnimatePresence>
-              {menuOrdenacaoAberto && (
-                <motion.div
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 4 }}
-                  className="absolute right-0 top-full z-50 mt-1 min-w-[140px] rounded-xl border border-white/10 bg-[#1a1a1c] p-1 shadow-xl"
-                >
-                  {(Object.keys(ROTULOS_ORDENACAO) as SortKey[]).map((key) => (
-                    <button
-                      type="button"
-                      key={key}
-                      onClick={(evento) => {
-                        evento.stopPropagation();
-                        onAlterarOrdenacao(key);
-                        setMenuOrdenacaoAberto(false);
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-xs transition-colors",
-                        grupo.sortKey === key
-                          ? "bg-emerald-500/10 text-emerald-400"
-                          : "text-white/50 hover:bg-white/5 hover:text-white/70"
-                      )}
-                    >
-                      {ROTULOS_ORDENACAO[key]}
-                      {grupo.sortKey === key && key !== "manual" && (
-                        <span className="ml-auto text-[10px] opacity-50">
-                          {grupo.sortDir === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          <div className="flex overflow-hidden rounded-lg border border-white/5 bg-white/3">
-            <button
-              type="button"
-              onClick={(evento) => {
-                evento.stopPropagation();
-                onAlterarModoExibicao("grid");
-              }}
-              className={cn(
-                "p-1.5 transition-colors",
-                viewMode === "grid"
-                  ? "bg-emerald-500/10 text-emerald-400"
-                  : "text-white/30 hover:text-white/50"
-              )}
-              aria-label={`Exibir ${grupo.name} em grade`}
-            >
-              <LayoutGrid size={12} />
-            </button>
-            <button
-              type="button"
-              onClick={(evento) => {
-                evento.stopPropagation();
-                onAlterarModoExibicao("list");
-              }}
-              className={cn(
-                "p-1.5 transition-colors",
-                viewMode === "list"
-                  ? "bg-emerald-500/10 text-emerald-400"
-                  : "text-white/30 hover:text-white/50"
-              )}
-              aria-label={`Exibir ${grupo.name} em lista`}
-            >
-              <List size={12} />
-            </button>
-          </div>
+          )}
         </div>
-
       </div>
 
       {/* Conteúdo */}
@@ -2420,22 +1781,26 @@ function GrupoWidget({
                   "text-center text-xs text-white/10"
                 )}
               >
-                Arraste instâncias ou clique com o botão direito para abrir as ações
+                Arraste instâncias para este grupo
               </div>
             ) : viewMode === "grid" ? (
               <div
-                className="grid grid-cols-[repeat(auto-fill,minmax(145px,1fr))] gap-2 px-1 pb-2"
+                className={cn(
+                  "grid grid-cols-2 gap-2 px-1 pb-2 sm:grid-cols-3 md:grid-cols-4",
+                  "lg:grid-cols-5 xl:grid-cols-6"
+                )}
               >
-                {instances.map((instance) => (
+                {instances.map((instance, i) => (
                   <CardGrid
                     key={instance.id}
                     instance={instance}
+                    index={i}
                     onSelect={onSelect}
                     onAbrirGerenciador={onAbrirGerenciador}
                     onAbrirMenuContexto={onAbrirMenuContexto}
                     onIniciarArrasto={onIniciarArrasto}
-                    arrastando={instance.id === instanceArrastadaId}
-                    destinoArrasto={instance.id === instanciaDestinoArrastoId}
+                    onEntrarDuranteArrasto={onEntrarInstanciaDuranteArrasto}
+                    onFinalizarArrasto={onFinalizarArrasto}
                     selecionada={instance.id === instanciaSelecionadaId}
                     ativa={instance.id === instanciaAtivaId}
                     agoraSegundos={agoraSegundos}
@@ -2444,16 +1809,17 @@ function GrupoWidget({
               </div>
             ) : (
               <div className="space-y-1 px-1 pb-2">
-                {instances.map((instance) => (
+                {instances.map((instance, i) => (
                   <CardList
                     key={instance.id}
                     instance={instance}
+                    index={i}
                     onSelect={onSelect}
                     onAbrirGerenciador={onAbrirGerenciador}
                     onAbrirMenuContexto={onAbrirMenuContexto}
                     onIniciarArrasto={onIniciarArrasto}
-                    arrastando={instance.id === instanceArrastadaId}
-                    destinoArrasto={instance.id === instanciaDestinoArrastoId}
+                    onEntrarDuranteArrasto={onEntrarInstanciaDuranteArrasto}
+                    onFinalizarArrasto={onFinalizarArrasto}
                     selecionada={instance.id === instanciaSelecionadaId}
                     ativa={instance.id === instanciaAtivaId}
                     agoraSegundos={agoraSegundos}
@@ -2471,23 +1837,25 @@ function GrupoWidget({
 // ===== CARD GRID (estilo PrismLauncher) =====
 function CardGrid({
   instance,
+  index,
   onSelect,
   onAbrirGerenciador,
   onAbrirMenuContexto,
   onIniciarArrasto,
-  arrastando,
-  destinoArrasto,
+  onEntrarDuranteArrasto,
+  onFinalizarArrasto,
   selecionada,
   ativa,
   agoraSegundos,
 }: {
   instance: Instance;
+  index: number;
   onSelect: (i: Instance) => void;
   onAbrirGerenciador: (i: Instance) => void;
   onAbrirMenuContexto: (evento: React.MouseEvent, instance: Instance) => void;
-  onIniciarArrasto: (id: string, evento: React.PointerEvent) => void;
-  arrastando: boolean;
-  destinoArrasto: boolean;
+  onIniciarArrasto: (id: string) => void;
+  onEntrarDuranteArrasto: (id: string) => void;
+  onFinalizarArrasto: () => void;
   selecionada: boolean;
   ativa: boolean;
   agoraSegundos: number;
@@ -2501,33 +1869,44 @@ function CardGrid({
   return (
     <motion.div
       layout="position"
-      layoutId={`instancia-biblioteca-${instance.id}`}
-      data-instancia-biblioteca-id={instance.id}
-      onPointerDown={(evento) => onIniciarArrasto(instance.id, evento)}
-      initial={false}
-      animate={{ opacity: arrastando ? 0.72 : 1, scale: arrastando ? 0.99 : 1 }}
-      transition={{
-        opacity: { duration: 0.1 },
-        scale: { duration: 0.1 },
-        layout: { type: "spring", stiffness: 460, damping: 42, mass: 0.52 },
+      onMouseUp={(evento) => {
+        evento.stopPropagation();
+        onFinalizarArrasto();
       }}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ delay: index * 0.02 }}
       onClick={() => onSelect(instance)}
       onDoubleClick={() => onAbrirGerenciador(instance)}
       onContextMenu={(evento) => onAbrirMenuContexto(evento, instance)}
+      onMouseEnter={() => onEntrarDuranteArrasto(instance.id)}
       className={cn(
-        "group relative flex cursor-grab select-none flex-col items-center rounded-xl border p-3 text-center",
-        "transition-colors active:cursor-grabbing",
+        "group relative rounded-xl p-3 cursor-pointer transition-all flex flex-col items-center text-center border",
         selecionada
           ? "bg-emerald-500/10 border-emerald-400/30 shadow-realce-selecao"
-          : "bg-white/3 hover:bg-white/5 border-white/5 hover:border-white/10",
-        destinoArrasto && "border-emerald-300/60 bg-emerald-400/8 shadow-[inset_0_0_0_1px_rgba(110,231,183,0.18)]"
+          : "bg-white/3 hover:bg-white/5 border-white/5 hover:border-white/10"
       )}
     >
+      {/* Grip para drag */}
+      <div
+        onMouseDown={(evento) => {
+          if (evento.button !== 0) return;
+          evento.stopPropagation();
+          onIniciarArrasto(instance.id);
+        }}
+        className={cn(
+          "absolute left-1.5 top-1.5 cursor-grab text-white/0 transition-colors",
+          "group-hover:text-white/15 active:cursor-grabbing"
+        )}
+      >
+        <GripVertical size={10} />
+      </div>
+
       {/* Ícone grande */}
       <div className="mb-2 h-16 w-16">
         <div className="w-full h-full rounded-xl bg-[#151516] border border-white/10 p-2 overflow-hidden">
           <img
-            src={instance.icon || ICONE_DOME_LAUNCHER}
+            src={instance.icon}
             alt={instance.name}
             draggable={false}
             className="w-full h-full object-contain group-hover:scale-110 transition-transform duration-200"
@@ -2557,23 +1936,25 @@ function CardGrid({
 // ===== CARD LISTA =====
 function CardList({
   instance,
+  index,
   onSelect,
   onAbrirGerenciador,
   onAbrirMenuContexto,
   onIniciarArrasto,
-  arrastando,
-  destinoArrasto,
+  onEntrarDuranteArrasto,
+  onFinalizarArrasto,
   selecionada,
   ativa,
   agoraSegundos,
 }: {
   instance: Instance;
+  index: number;
   onSelect: (i: Instance) => void;
   onAbrirGerenciador: (i: Instance) => void;
   onAbrirMenuContexto: (evento: React.MouseEvent, instance: Instance) => void;
-  onIniciarArrasto: (id: string, evento: React.PointerEvent) => void;
-  arrastando: boolean;
-  destinoArrasto: boolean;
+  onIniciarArrasto: (id: string) => void;
+  onEntrarDuranteArrasto: (id: string) => void;
+  onFinalizarArrasto: () => void;
   selecionada: boolean;
   ativa: boolean;
   agoraSegundos: number;
@@ -2587,33 +1968,41 @@ function CardList({
   return (
     <motion.div
       layout="position"
-      layoutId={`instancia-biblioteca-${instance.id}`}
-      data-instancia-biblioteca-id={instance.id}
-      onPointerDown={(evento) => onIniciarArrasto(instance.id, evento)}
-      initial={false}
-      animate={{ opacity: arrastando ? 0.72 : 1, scale: arrastando ? 0.995 : 1 }}
-      transition={{
-        opacity: { duration: 0.1 },
-        scale: { duration: 0.1 },
-        layout: { type: "spring", stiffness: 500, damping: 44, mass: 0.48 },
+      onMouseUp={(evento) => {
+        evento.stopPropagation();
+        onFinalizarArrasto();
       }}
+      initial={{ opacity: 0, x: -5 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: index * 0.02 }}
       onClick={() => onSelect(instance)}
       onDoubleClick={() => onAbrirGerenciador(instance)}
       onContextMenu={(evento) => onAbrirMenuContexto(evento, instance)}
+      onMouseEnter={() => onEntrarDuranteArrasto(instance.id)}
       className={cn(
-        "group flex cursor-grab select-none items-center gap-3 rounded-xl border px-3 py-2 transition-colors",
-        "active:cursor-grabbing",
+        "group flex items-center gap-3 rounded-xl px-3 py-2 cursor-pointer transition-all border",
         selecionada
           ? "bg-emerald-500/10 border-emerald-400/30 shadow-realce-selecao"
-          : "bg-white/2 hover:bg-white/4 border-white/3 hover:border-white/8",
-        destinoArrasto && "border-emerald-300/60 bg-emerald-400/8 shadow-[inset_0_0_0_1px_rgba(110,231,183,0.18)]"
+          : "bg-white/2 hover:bg-white/4 border-white/3 hover:border-white/8"
       )}
     >
+      {/* Grip */}
+      <div
+        onMouseDown={(evento) => {
+          if (evento.button !== 0) return;
+          evento.stopPropagation();
+          onIniciarArrasto(instance.id);
+        }}
+        className="text-white/0 group-hover:text-white/15 transition-colors cursor-grab active:cursor-grabbing shrink-0"
+      >
+        <GripVertical size={12} />
+      </div>
+
       {/* Ícone */}
       <div className="shrink-0">
         <div className="w-9 h-9 rounded-lg bg-[#151516] border border-white/10 p-1 overflow-hidden">
           <img
-            src={instance.icon || ICONE_DOME_LAUNCHER}
+            src={instance.icon}
             alt={instance.name}
             draggable={false}
             className="w-full h-full object-contain"

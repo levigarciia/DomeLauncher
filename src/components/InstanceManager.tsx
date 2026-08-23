@@ -32,12 +32,7 @@ import {
   EXTENSOES_IMAGEM_INSTANCIA,
   prepararIconeInstancia,
 } from "../lib/iconeInstancia";
-import {
-  EVENTO_NAVEGACAO_MOUSE_LATERAL,
-} from "../lib/navegacaoMouseLateral";
-import type { DetalheNavegacaoMouseLateral } from "../lib/navegacaoMouseLateral";
 import Configuracao from "../pages/instance/Configuracao";
-import Screenshots, { ScreenshotInstancia } from "../pages/instance/Screenshots";
 import type { ProjetoConteudo } from "./ProjetoDetalheModal";
 
 interface InstanceManagerProps {
@@ -93,12 +88,6 @@ interface ConteudoInstaladoDetalhado {
   enabled: boolean;
 }
 
-interface AssinaturasConteudoInstalado {
-  mods: string;
-  resourcepacks: string;
-  shaders: string;
-}
-
 interface SearchResult {
   id: string;
   title: string;
@@ -132,7 +121,7 @@ interface ConfiguracoesGlobais {
   close_on_launch?: boolean;
 }
 
-type ContentTab = "content" | "worlds" | "configuration" | "screenshots" | "logs";
+type ContentTab = "content" | "worlds" | "configuration" | "logs";
 type ContentFilter = "mods" | "resourcepacks" | "shaders";
 type ViewMode = "installed" | "browse";
 type BrowseSource = "modrinth" | "curseforge";
@@ -162,7 +151,6 @@ const TTL_CACHE_ATUALIZACAO_MS = 1000 * 60 * 60 * 6;
 const TTL_RETENTATIVA_ENRIQUECIMENTO_MS = 1000 * 60 * 60 * 24;
 const LIMITE_ENRIQUECIMENTO_POR_CICLO = 8;
 const VERSAO_IDENTIFICACAO_CONTEUDO = 2;
-const INTERVALO_VERIFICACAO_CONTEUDO_MS = 1500;
 
 const tipoProjetoPorFiltro = (filtro: ContentFilter): TipoProjetoCache => {
   if (filtro === "resourcepacks") return "resourcepack";
@@ -315,8 +303,6 @@ export default function InstanceManager({
   const [searching, setSearching] = useState(false);
   const [installing, setInstalling] = useState<string | null>(null);
   const [worlds, setWorlds] = useState<WorldInfo[]>([]);
-  const [screenshots, setScreenshots] = useState<ScreenshotInstancia[]>([]);
-  const [carregandoScreenshots, setCarregandoScreenshots] = useState(false);
   const [logs, setLogs] = useState<LogFile[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState("");
@@ -338,8 +324,6 @@ export default function InstanceManager({
   const [saving, setSaving] = useState(false);
 
   const lastSearch = useRef({ query: "", filter: "", source: "" });
-  const assinaturasConteudoRef = useRef<AssinaturasConteudoInstalado | null>(null);
-  const verificandoConteudoRef = useRef(false);
   const listaConteudoRef = useRef<HTMLDivElement | null>(null);
   const iconInputRef = useRef<HTMLInputElement | null>(null);
   const arrasteIndicadorRef = useRef<{
@@ -356,29 +340,7 @@ export default function InstanceManager({
   }, [instanceId]);
 
   useEffect(() => {
-    const navegarEntreConteudos = (evento: Event) => {
-      if (activeTab !== "content") return;
-
-      const eventoNavegacao = evento as CustomEvent<DetalheNavegacaoMouseLateral>;
-      const deveMostrarInstalados =
-        eventoNavegacao.detail.direcao === -1 && viewMode === "browse";
-      const deveAdicionarConteudo =
-        eventoNavegacao.detail.direcao === 1 && viewMode === "installed";
-      if (!deveMostrarInstalados && !deveAdicionarConteudo) return;
-
-      evento.preventDefault();
-      setViewMode(deveMostrarInstalados ? "installed" : "browse");
-    };
-
-    window.addEventListener(EVENTO_NAVEGACAO_MOUSE_LATERAL, navegarEntreConteudos);
-    return () => {
-      window.removeEventListener(EVENTO_NAVEGACAO_MOUSE_LATERAL, navegarEntreConteudos);
-    };
-  }, [activeTab, viewMode]);
-
-  useEffect(() => {
     if (activeTab === "worlds") loadWorlds();
-    if (activeTab === "screenshots") loadScreenshots();
     if (activeTab === "logs") loadLogs();
   }, [activeTab]);
 
@@ -388,54 +350,6 @@ export default function InstanceManager({
       loadInstalledContent(activeFilter);
     }
   }, [activeFilter, activeTab, instanceDetails?.id]);
-
-  useEffect(() => {
-    if (!instanceDetails) return;
-
-    let cancelado = false;
-    assinaturasConteudoRef.current = null;
-
-    const verificarAlteracoesConteudo = async () => {
-      if (verificandoConteudoRef.current) return;
-      verificandoConteudoRef.current = true;
-
-      try {
-        const assinaturas = await invoke<AssinaturasConteudoInstalado>(
-          "obter_assinaturas_conteudo_instalado",
-          { instanceId }
-        );
-        if (cancelado) return;
-
-        const anteriores = assinaturasConteudoRef.current;
-        assinaturasConteudoRef.current = assinaturas;
-        if (!anteriores) return;
-
-        const tiposAlterados = (
-          ["mods", "resourcepacks", "shaders"] as ContentFilter[]
-        ).filter((tipo) => anteriores[tipo] !== assinaturas[tipo]);
-
-        await Promise.all(
-          tiposAlterados.map((tipo) => loadInstalledContent(tipo, true))
-        );
-      } catch (error) {
-        console.error("Erro ao verificar alterações nas pastas de conteúdo:", error);
-      } finally {
-        verificandoConteudoRef.current = false;
-      }
-    };
-
-    void verificarAlteracoesConteudo();
-    const intervalo = window.setInterval(
-      verificarAlteracoesConteudo,
-      INTERVALO_VERIFICACAO_CONTEUDO_MS
-    );
-
-    return () => {
-      cancelado = true;
-      window.clearInterval(intervalo);
-      verificandoConteudoRef.current = false;
-    };
-  }, [instanceDetails?.id, instanceId]);
 
   // Verificar se instância é vanilla (não mostrar mods/shaders)
   // Corrigido: usar loaderType (camelCase) que vem do backend
@@ -971,38 +885,6 @@ export default function InstanceManager({
     } catch (error) {
       console.error("Erro ao carregar logs:", error);
       setLogs([]);
-    }
-  };
-
-  const loadScreenshots = async () => {
-    setCarregandoScreenshots(true);
-    try {
-      const lista = await invoke<ScreenshotInstancia[]>("get_instance_screenshots", {
-        instanceId,
-      });
-      setScreenshots(lista);
-    } catch (error) {
-      console.error("Erro ao carregar screenshots:", error);
-      setScreenshots([]);
-    } finally {
-      setCarregandoScreenshots(false);
-    }
-  };
-
-  const excluirScreenshot = async (screenshot: ScreenshotInstancia) => {
-    if (!confirm(`Excluir a screenshot "${screenshot.nome}"? Esta ação não pode ser desfeita.`)) {
-      return;
-    }
-
-    try {
-      await invoke("delete_instance_screenshot", {
-        instanceId,
-        nome: screenshot.nome,
-      });
-      setScreenshots((atuais) => atuais.filter((item) => item.nome !== screenshot.nome));
-    } catch (error) {
-      console.error("Erro ao excluir screenshot:", error);
-      alert(`Não foi possível excluir a screenshot: ${error}`);
     }
   };
 
@@ -1946,8 +1828,8 @@ export default function InstanceManager({
         <div className="flex gap-1">
           {(
             isVanilla
-              ? (["content", "worlds", "screenshots", "logs"] as ContentTab[])
-              : (["content", "worlds", "configuration", "screenshots", "logs"] as ContentTab[])
+              ? (["content", "worlds", "logs"] as ContentTab[])
+              : (["content", "worlds", "configuration", "logs"] as ContentTab[])
           ).map((tab) => (
             <button
               key={tab}
@@ -1965,8 +1847,6 @@ export default function InstanceManager({
                   ? "Mundos"
                   : tab === "configuration"
                     ? "Configuração"
-                    : tab === "screenshots"
-                      ? "Screenshots"
                     : "Logs"}
             </button>
           ))}
@@ -2488,23 +2368,11 @@ export default function InstanceManager({
         {activeTab === "configuration" && instanceDetails && (
           <Configuracao
             instanceId={instanceId}
-            minecraftVersion={instanceDetails.version}
-            loaderType={instanceDetails.loaderType ?? instanceDetails.mcType}
-            loaderVersion={instanceDetails.loaderVersion}
             memoriaPersonalizada={instanceDetails.memory}
             argumentosJvm={instanceDetails.javaArgs}
             largura={instanceDetails.width}
             altura={instanceDetails.height}
             onSalvar={loadInstanceDetails}
-            onVersaoAlterada={() => onInstanceUpdate?.()}
-          />
-        )}
-
-        {activeTab === "screenshots" && (
-          <Screenshots
-            screenshots={screenshots}
-            carregando={carregandoScreenshots}
-            onExcluir={excluirScreenshot}
           />
         )}
 

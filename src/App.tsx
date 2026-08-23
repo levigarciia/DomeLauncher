@@ -34,7 +34,6 @@ import { EsqueletoAba } from "./components/EsqueletoCarregamento";
 import VisualizacaoInstanciaSocial from "./components/VisualizacaoInstanciaSocial";
 import type { AmigoSocial } from "./components/social/tiposSocial";
 import { aplicarCorDestaque, normalizarCorDestaque } from "./lib/corDestaque";
-import { solicitarNavegacaoMouseLateral } from "./lib/navegacaoMouseLateral";
 
 const carregarSkinManager = () =>
   import("./components/SkinManager").then((modulo) => ({ default: modulo.SkinManager }));
@@ -145,14 +144,6 @@ const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
 const INTERVALO_VERIFICACAO_INSTANCIAS_MS = 20 * 1000;
 type TipoExplorePresence = "modpack" | "mod" | "resourcepack" | "shader";
 type FonteExplorePresence = "modrinth" | "curseforge";
-interface EntradaHistoricoNavegacao {
-  aba: string;
-  projetoDetalhe?: ProjetoConteudo | null;
-  atividadeSocialDetalhe?: AmigoSocial | null;
-  abaOrigemProjeto?: AbaOrigemProjeto;
-  managedInstanceId?: string;
-}
-
 const TITULOS_ABA: Record<string, string> = {
   home: "Início",
   instances: "Biblioteca",
@@ -167,11 +158,6 @@ const TITULOS_ABA: Record<string, string> = {
 export default function App() {
   const { instances, launch, launchServer, remove, fetchInstances } = useLauncher();
   const [activeTab, setActiveTab] = useState("home");
-  const [solicitacaoMenuCriarGrupo, setSolicitacaoMenuCriarGrupo] = useState<{
-    id: number;
-    x: number;
-    y: number;
-  } | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -207,74 +193,9 @@ export default function App() {
   const ehTelaXl = useBreakpointXl();
   const ultimaAssinaturaPresence = useRef<string>("");
   const menuContaRef = useRef<HTMLDivElement | null>(null);
-  const abaAtualRef = useRef("home");
-  const historicoNavegacaoRef = useRef<EntradaHistoricoNavegacao[]>([{ aba: "home" }]);
-  const indiceHistoricoRef = useRef(0);
-
-  const capturarEstadoNavegacao = useCallback((): EntradaHistoricoNavegacao => ({
-    aba: abaAtualRef.current,
-    projetoDetalhe,
-    atividadeSocialDetalhe,
-    abaOrigemProjeto,
-    managedInstanceId,
-  }), [abaOrigemProjeto, atividadeSocialDetalhe, managedInstanceId, projetoDetalhe]);
-
-  const aplicarEstadoNavegacao = useCallback((entrada: EntradaHistoricoNavegacao) => {
-    if ("projetoDetalhe" in entrada) setProjetoDetalhe(entrada.projetoDetalhe ?? null);
-    if ("atividadeSocialDetalhe" in entrada) {
-      setAtividadeSocialDetalhe(entrada.atividadeSocialDetalhe ?? null);
-    }
-    if (entrada.abaOrigemProjeto) setAbaOrigemProjeto(entrada.abaOrigemProjeto);
-    if (typeof entrada.managedInstanceId === "string") {
-      setManagedInstanceId(entrada.managedInstanceId);
-    }
-    abaAtualRef.current = entrada.aba;
-    startTransition(() => setActiveTab(entrada.aba));
-  }, []);
-
   const navegarParaAba = useCallback((aba: string) => {
-    if (aba === abaAtualRef.current) return;
-
-    const historico = historicoNavegacaoRef.current;
-    historico[indiceHistoricoRef.current] = capturarEstadoNavegacao();
-    historico.splice(indiceHistoricoRef.current + 1);
-    historico.push({ aba });
-    indiceHistoricoRef.current = historico.length - 1;
-    abaAtualRef.current = aba;
     startTransition(() => setActiveTab(aba));
-  }, [capturarEstadoNavegacao]);
-
-  const navegarNoHistorico = useCallback((direcao: -1 | 1) => {
-    const historico = historicoNavegacaoRef.current;
-    const indiceDestino = indiceHistoricoRef.current + direcao;
-    if (indiceDestino < 0 || indiceDestino >= historico.length) return;
-
-    historico[indiceHistoricoRef.current] = capturarEstadoNavegacao();
-    indiceHistoricoRef.current = indiceDestino;
-    aplicarEstadoNavegacao(historico[indiceDestino]);
-  }, [aplicarEstadoNavegacao, capturarEstadoNavegacao]);
-
-  useEffect(() => {
-    const aoPressionarBotaoMouse = (evento: MouseEvent) => {
-      if (evento.button !== 3 && evento.button !== 4) return;
-      evento.preventDefault();
-      const direcao = evento.button === 3 ? -1 : 1;
-      if (solicitarNavegacaoMouseLateral(direcao)) return;
-      navegarNoHistorico(direcao);
-    };
-    const bloquearCliqueAuxiliar = (evento: MouseEvent) => {
-      if (evento.button === 3 || evento.button === 4) evento.preventDefault();
-    };
-
-    window.addEventListener("mousedown", aoPressionarBotaoMouse, true);
-    window.addEventListener("mouseup", bloquearCliqueAuxiliar, true);
-    window.addEventListener("auxclick", bloquearCliqueAuxiliar, true);
-    return () => {
-      window.removeEventListener("mousedown", aoPressionarBotaoMouse, true);
-      window.removeEventListener("mouseup", bloquearCliqueAuxiliar, true);
-      window.removeEventListener("auxclick", bloquearCliqueAuxiliar, true);
-    };
-  }, [navegarNoHistorico]);
+  }, []);
 
   useEffect(() => {
     if (activeTab === "instances") {
@@ -1261,7 +1182,6 @@ export default function App() {
                   onDelete={(id) => remove(id)}
                   onCreateNew={() => setIsCreateOpen(true)}
                   onAtualizarInstancias={fetchInstances}
-                  solicitacaoMenuCriarGrupo={solicitacaoMenuCriarGrupo}
                   user={user}
                   onLogin={() => setIsLoginOpen(true)}
                 />
@@ -1424,19 +1344,6 @@ export default function App() {
               initial={{ y: 80, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 80, opacity: 0 }}
-              onContextMenu={(evento) => {
-                if (activeTab !== "instances") return;
-                const alvo = evento.target as HTMLElement;
-                if (alvo.closest("button")) return;
-
-                evento.preventDefault();
-                evento.stopPropagation();
-                setSolicitacaoMenuCriarGrupo({
-                  id: Date.now(),
-                  x: evento.clientX,
-                  y: evento.clientY,
-                });
-              }}
               className={cn(
                 "absolute bottom-0 left-0 right-0 p-6 transition-[padding]",
                 activeTab === "instances" ? "pointer-events-auto" : "pointer-events-none",

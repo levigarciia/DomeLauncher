@@ -513,7 +513,7 @@ export default function ProjetoDetalheModal({
   useEffect(() => {
     let cancelado = false;
     setAbaConteudo("descricao");
-    setInstanciaSelecionadaId(null);
+    setInstanciaSelecionadaId(instanciaInicialId ?? null);
     setVersaoSelecionadaId(null);
     setPesquisaInstancia("");
     setVersoesProjeto([]);
@@ -545,7 +545,7 @@ export default function ProjetoDetalheModal({
     return () => {
       cancelado = true;
     };
-  }, [projeto.id, projeto.source]);
+  }, [instanciaInicialId, projeto.id, projeto.source]);
 
   const instanciaSelecionada = useMemo(
     () =>

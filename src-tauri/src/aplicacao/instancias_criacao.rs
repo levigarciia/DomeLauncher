@@ -148,7 +148,12 @@ pub(crate) async fn get_loader_versions(
             if let Some(versions_arr) = neoforge_data["versions"].as_array() {
                 let prefixo_minecraft = minecraft_version
                     .as_deref()
-                    .and_then(prefixo_neoforge_para_minecraft);
+                    .map(|versao| {
+                        prefixo_neoforge_para_minecraft(versao).ok_or_else(|| {
+                            format!("Versão do Minecraft inválida para o NeoForge: {}", versao)
+                        })
+                    })
+                    .transpose()?;
                 let mut versions = versions_arr
                     .iter()
                     .filter_map(|v| {
@@ -199,15 +204,23 @@ fn comparar_versoes_loader_desc(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn prefixo_neoforge_para_minecraft(minecraft_version: &str) -> Option<String> {
-    let versao = minecraft_version.trim().strip_prefix("1.")?;
-    let mut partes = versao.split('.');
-    let minor = partes.next()?;
-    let patch = partes.next().unwrap_or("0");
-    if minor.is_empty() || patch.is_empty() {
+    let partes = minecraft_version.trim().split('.').collect::<Vec<_>>();
+    if partes.is_empty()
+        || partes.iter().any(|parte| {
+            parte.is_empty() || !parte.chars().all(|caractere| caractere.is_ascii_digit())
+        })
+    {
         return None;
     }
 
-    Some(format!("{}.{}.", minor, patch))
+    if partes[0] == "1" {
+        let minor = partes.get(1)?;
+        let patch = partes.get(2).copied().unwrap_or("0");
+        return Some(format!("{}.{}.", minor, patch));
+    }
+
+    let ciclo = partes.get(1)?;
+    Some(format!("{}.{}.", partes[0], ciclo))
 }
 
 // ===== FUNÇÕES DE MODS E CONTEÚDO =====
@@ -1611,4 +1624,40 @@ pub(super) fn coletar_argumentos_jvm_manifesto(
     }
 
     args_jvm
+}
+
+#[cfg(test)]
+mod testes {
+    use super::prefixo_neoforge_para_minecraft;
+
+    #[test]
+    fn converte_versoes_classicas_para_prefixo_neoforge() {
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("1.21.1"),
+            Some("21.1.".to_string())
+        );
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("1.21"),
+            Some("21.0.".to_string())
+        );
+    }
+
+    #[test]
+    fn converte_versoes_anuais_sem_misturar_ciclos() {
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("26.1"),
+            Some("26.1.".to_string())
+        );
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("26.2.1"),
+            Some("26.2.".to_string())
+        );
+    }
+
+    #[test]
+    fn rejeita_versoes_invalidas() {
+        assert_eq!(prefixo_neoforge_para_minecraft("26"), None);
+        assert_eq!(prefixo_neoforge_para_minecraft("26.x"), None);
+        assert_eq!(prefixo_neoforge_para_minecraft(""), None);
+    }
 }

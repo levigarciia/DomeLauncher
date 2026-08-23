@@ -55,7 +55,6 @@ export function MenuStatusSocial({
                     {([
                         { status: 'online' as const, invisivel: false, rotulo: 'Disponível' },
                         { status: 'ausente' as const, invisivel: false, rotulo: 'Ausente' },
-                        { status: 'ocupado' as const, invisivel: false, rotulo: 'Ocupado' },
                         { status: statusManual, invisivel: true, rotulo: 'Invisível' },
                     ]).map((opcao) => {
                         const selecionada = opcao.invisivel

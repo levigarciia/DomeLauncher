@@ -35,7 +35,7 @@ interface ContaMinecraftSocial {
   ultimoUsoEm?: string | null;
 }
 
-type StatusPresenca = 'online' | 'ausente' | 'ocupado' | 'offline';
+type StatusPresenca = 'online' | 'ausente' | 'offline';
 type TipoAtividade = 'modpack_exato' | 'instancia_personalizada' | 'launcher';
 
 interface AtividadeSocial {
@@ -314,13 +314,12 @@ function tempoRelativo(data: string | null | undefined): string {
 
 function rotuloStatus(status?: StatusPresenca): string {
   if (status === 'ausente') return 'Ausente';
-  if (status === 'ocupado') return 'Ocupado';
   if (status === 'offline') return 'Offline';
   return 'Online';
 }
 
 function statusEfetivo(status: StatusPresenca | undefined, online: boolean): StatusPresenca {
-  if (status === 'online' || status === 'ausente' || status === 'ocupado' || status === 'offline') {
+  if (status === 'online' || status === 'ausente' || status === 'offline') {
     return status;
   }
   return online ? 'online' : 'offline';
@@ -486,7 +485,7 @@ export default function SocialSidebar({
     () =>
       amigosFiltrados.filter((amigo) => {
         const status = statusEfetivo(amigo.status, amigo.online);
-        return status === 'online' || status === 'ausente' || status === 'ocupado';
+        return status === 'online' || status === 'ausente';
       }),
     [amigosFiltrados]
   );
@@ -512,9 +511,7 @@ export default function SocialSidebar({
     salvarSessaoLocal(novaSessao);
     if (novaSessao?.perfil) {
       setStatusManual(
-        novaSessao.perfil.status === 'ausente' || novaSessao.perfil.status === 'ocupado'
-          ? novaSessao.perfil.status
-          : 'online'
+        novaSessao.perfil.status === 'ausente' ? 'ausente' : 'online'
       );
       setAparecerOffline(Boolean(novaSessao.perfil.aparecerOffline));
     }
@@ -611,9 +608,7 @@ export default function SocialSidebar({
       });
       setPerfil(perfilCarregado);
       setStatusManual(
-        perfilCarregado.status === 'ausente' || perfilCarregado.status === 'ocupado'
-          ? perfilCarregado.status
-          : 'online'
+        perfilCarregado.status === 'ausente' ? 'ausente' : 'online'
       );
       setAparecerOffline(Boolean(perfilCarregado.aparecerOffline));
       setNomeSocialEditavel(perfilCarregado.nomeSocial ?? '');
@@ -747,11 +742,7 @@ export default function SocialSidebar({
 
       if (resposta.perfil) {
         setPerfil(resposta.perfil);
-        setStatusManual(
-          resposta.perfil.status === 'ausente' || resposta.perfil.status === 'ocupado'
-            ? resposta.perfil.status
-            : 'online'
-        );
+        setStatusManual(resposta.perfil.status === 'ausente' ? 'ausente' : 'online');
         setAparecerOffline(Boolean(resposta.perfil.aparecerOffline));
       }
     } catch (erro) {
