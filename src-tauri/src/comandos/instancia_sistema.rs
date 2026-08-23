@@ -12,7 +12,7 @@ pub(crate) fn caminho_instancia_por_id(
         return Err("Identificador de instância inválido.".to_string());
     }
 
-    Ok(state.instances_path.join(id))
+    Ok(state.caminho_instancias()?.join(id))
 }
 
 fn identificador_instancia_valido(id: &str) -> bool {

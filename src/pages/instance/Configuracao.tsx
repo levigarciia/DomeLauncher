@@ -1,21 +1,49 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AnimatePresence, motion } from "framer-motion";
-import { AlertCircle, ChevronDown, ChevronUp, HardDrive, Monitor, Terminal } from "../../iconesPixelados";
+import {
+    AlertCircle,
+    Check,
+    ChevronDown,
+    ChevronUp,
+    Gamepad2,
+    HardDrive,
+    Loader2,
+    Monitor,
+    Package,
+    Terminal,
+} from "../../iconesPixelados";
 import { cn } from "../../lib/utils";
 
 interface ConfiguracaoProps {
     instanceId: string;
+    minecraftVersion: string;
+    loaderType?: string;
+    loaderVersion?: string;
     memoriaPersonalizada?: number | null;
     argumentosJvm?: string | null;
     largura?: number;
     altura?: number;
     onSalvar: () => Promise<void> | void;
+    onVersaoAlterada?: () => Promise<void> | void;
 }
 
 interface ConfiguracoesGlobais {
     ram_mb: number;
     java_args: string;
+}
+
+interface VersaoMinecraftDisponivel {
+    id: string;
+    type: string;
+}
+
+interface ManifestoVersoesMinecraft {
+    versions: VersaoMinecraftDisponivel[];
+}
+
+interface RespostaVersoesLoader {
+    versions: Array<{ version: string }>;
 }
 
 const MEMORIA_MINIMA_MB = 512;
@@ -58,12 +86,24 @@ function assinaturaResolucao(largura: number, altura: number): string {
 
 export default function Configuracao({
     instanceId,
+    minecraftVersion,
+    loaderType,
+    loaderVersion,
     memoriaPersonalizada,
     argumentosJvm,
     largura = 854,
     altura = 480,
     onSalvar,
+    onVersaoAlterada,
 }: ConfiguracaoProps) {
+    const [versoesMinecraft, setVersoesMinecraft] = useState<VersaoMinecraftDisponivel[]>([]);
+    const [versoesLoader, setVersoesLoader] = useState<string[]>([]);
+    const [minecraftSelecionado, setMinecraftSelecionado] = useState(minecraftVersion);
+    const [loaderSelecionado, setLoaderSelecionado] = useState(loaderVersion ?? "");
+    const [carregandoMinecraft, setCarregandoMinecraft] = useState(true);
+    const [carregandoLoader, setCarregandoLoader] = useState(false);
+    const [salvandoVersao, setSalvandoVersao] = useState(false);
+    const [mensagemVersao, setMensagemVersao] = useState<string | null>(null);
     const [usarMemoriaPersonalizada, setUsarMemoriaPersonalizada] = useState(
         memoriaPersonalizada != null,
     );
@@ -82,8 +122,12 @@ export default function Configuracao({
     );
     const ultimosArgumentosSalvosRef = useRef(argumentosJvm);
     const ultimaResolucaoSalvaRef = useRef(assinaturaResolucao(largura, altura));
+    const loaderNormalizado = (loaderType ?? "vanilla").toLowerCase();
+    const possuiLoader = loaderNormalizado !== "vanilla";
 
     useEffect(() => {
+        setMinecraftSelecionado(minecraftVersion);
+        setLoaderSelecionado(loaderVersion ?? "");
         const usarPersonalizada = memoriaPersonalizada != null;
         setUsarMemoriaPersonalizada(usarPersonalizada);
         if (memoriaPersonalizada != null) setMemoriaMb(memoriaPersonalizada);
@@ -97,7 +141,78 @@ export default function Configuracao({
         setLarguraEditavel(String(largura));
         setAlturaEditavel(String(altura));
         ultimaResolucaoSalvaRef.current = assinaturaResolucao(largura, altura);
-    }, [instanceId, memoriaPersonalizada, argumentosJvm, largura, altura]);
+    }, [instanceId, minecraftVersion, loaderVersion, memoriaPersonalizada, argumentosJvm, largura, altura]);
+
+    useEffect(() => {
+        setMensagemVersao(null);
+    }, [instanceId]);
+
+    useEffect(() => {
+        let cancelado = false;
+
+        const carregarVersoesMinecraft = async () => {
+            setCarregandoMinecraft(true);
+            try {
+                const manifesto = await invoke<ManifestoVersoesMinecraft>("get_minecraft_versions");
+                if (!cancelado) setVersoesMinecraft(manifesto.versions ?? []);
+            } catch (falha) {
+                if (!cancelado) setErro(String(falha));
+            } finally {
+                if (!cancelado) setCarregandoMinecraft(false);
+            }
+        };
+
+        void carregarVersoesMinecraft();
+        return () => {
+            cancelado = true;
+        };
+    }, [instanceId]);
+
+    useEffect(() => {
+        let cancelado = false;
+        if (!possuiLoader || !minecraftSelecionado) {
+            setVersoesLoader([]);
+            setLoaderSelecionado("");
+            return () => {
+                cancelado = true;
+            };
+        }
+
+        const carregarVersoesLoader = async () => {
+            setCarregandoLoader(true);
+            setMensagemVersao(null);
+            try {
+                const resposta = await invoke<RespostaVersoesLoader>("get_loader_versions", {
+                    loaderType: loaderNormalizado,
+                    minecraftVersion: minecraftSelecionado,
+                });
+                if (cancelado) return;
+                const versoes = (resposta.versions ?? []).map((item) => item.version);
+                setVersoesLoader(versoes);
+                setLoaderSelecionado((atual) => {
+                    if (versoes.includes(atual)) return atual;
+                    if (minecraftSelecionado === minecraftVersion && loaderVersion
+                        && versoes.includes(loaderVersion)) {
+                        return loaderVersion;
+                    }
+                    return versoes[0] ?? "";
+                });
+            } catch (falha) {
+                if (!cancelado) {
+                    setVersoesLoader([]);
+                    setLoaderSelecionado("");
+                    setErro(String(falha));
+                }
+            } finally {
+                if (!cancelado) setCarregandoLoader(false);
+            }
+        };
+
+        void carregarVersoesLoader();
+        return () => {
+            cancelado = true;
+        };
+    }, [instanceId, loaderNormalizado, loaderVersion, minecraftSelecionado, minecraftVersion, possuiLoader]);
 
     useEffect(() => {
         const carregarConfiguracaoGlobal = async () => {
@@ -211,8 +326,129 @@ export default function Configuracao({
         setArgumentosJvmAlterados(true);
     };
 
+    const versaoFoiAlterada = minecraftSelecionado !== minecraftVersion
+        || (possuiLoader && loaderSelecionado !== (loaderVersion ?? ""));
+
+    const aplicarNovaVersao = async () => {
+        if (!versaoFoiAlterada || salvandoVersao) return;
+        setSalvandoVersao(true);
+        setMensagemVersao(null);
+        setErro(null);
+        try {
+            await invoke("update_instance_version", {
+                instanceId,
+                minecraftVersion: minecraftSelecionado,
+                loaderVersion: possuiLoader ? loaderSelecionado : undefined,
+            });
+            await onSalvar();
+            await onVersaoAlterada?.();
+            setMensagemVersao("Versão atualizada. Mods, configurações e mundos foram preservados.");
+        } catch (falha) {
+            setErro(String(falha));
+        } finally {
+            setSalvandoVersao(false);
+        }
+    };
+
     return (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 space-y-4 overflow-y-auto p-6">
+            <section className="mr-auto max-w-3xl overflow-hidden border border-white/10 bg-[#171717]">
+                <div className="flex items-center gap-3 border-b border-white/8 px-5 py-4">
+                    <div className="grid h-9 w-9 shrink-0 place-items-center border border-emerald-400/20 bg-emerald-400/[0.06]">
+                        <Gamepad2 size={16} className="text-emerald-300/80" />
+                    </div>
+                    <div>
+                        <h2 className="text-sm font-bold text-white/90">Versão da instância</h2>
+                        <p className="text-[10px] text-white/30">
+                            Troque o Minecraft e a build compatível do loader
+                        </p>
+                    </div>
+                </div>
+
+                <div className="space-y-4 px-5 py-5">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="min-w-0">
+                            <span className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.1em] text-white/40">
+                                <Gamepad2 size={11} /> Minecraft
+                            </span>
+                            <div className="relative">
+                                <select
+                                    value={minecraftSelecionado}
+                                    disabled={carregandoMinecraft || salvandoVersao}
+                                    onChange={(evento) => setMinecraftSelecionado(evento.target.value)}
+                                    className="w-full appearance-none border border-white/10 bg-white/[0.025] px-3 py-2.5 pr-9 text-sm font-bold text-white/80 outline-none transition-colors focus:border-emerald-400/35 disabled:opacity-50"
+                                >
+                                    {versoesMinecraft.map((versao) => (
+                                        <option key={versao.id} value={versao.id} className="bg-[#171717]">
+                                            {versao.id}{versao.type === "release" ? "" : ` · ${versao.type}`}
+                                        </option>
+                                    ))}
+                                </select>
+                                <ChevronDown size={13} className="pointer-events-none absolute right-3 top-3.5 text-white/30" />
+                            </div>
+                        </label>
+
+                        <label className="min-w-0">
+                            <span className="mb-1.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.1em] text-white/40">
+                                <Package size={11} /> {possuiLoader ? loaderType : "Modloader"}
+                            </span>
+                            <div className="relative">
+                                <select
+                                    value={possuiLoader ? loaderSelecionado : "vanilla"}
+                                    disabled={!possuiLoader || carregandoLoader || salvandoVersao}
+                                    onChange={(evento) => setLoaderSelecionado(evento.target.value)}
+                                    className="w-full appearance-none border border-white/10 bg-white/[0.025] px-3 py-2.5 pr-9 text-sm font-bold text-white/80 outline-none transition-colors focus:border-emerald-400/35 disabled:opacity-50"
+                                >
+                                    {!possuiLoader && <option value="vanilla">Vanilla</option>}
+                                    {versoesLoader.map((versao) => (
+                                        <option key={versao} value={versao} className="bg-[#171717]">
+                                            {versao}
+                                        </option>
+                                    ))}
+                                </select>
+                                {carregandoLoader
+                                    ? <Loader2 size={13} className="absolute right-3 top-3.5 animate-spin text-emerald-300/60" />
+                                    : <ChevronDown size={13} className="pointer-events-none absolute right-3 top-3.5 text-white/30" />}
+                            </div>
+                        </label>
+                    </div>
+
+                    {versaoFoiAlterada && (
+                        <div className="flex items-start gap-2 border-l-2 border-amber-400/55 bg-amber-400/[0.045] px-3 py-2.5">
+                            <AlertCircle size={13} className="mt-0.5 shrink-0 text-amber-300/80" />
+                            <p className="text-[10px] leading-relaxed text-amber-100/55">
+                                O conteúdo será preservado, mas mods instalados podem não funcionar na nova versão.
+                            </p>
+                        </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4">
+                        <p className="text-[10px] text-white/30">
+                            Atual: Minecraft {minecraftVersion}
+                            {possuiLoader && loaderVersion ? ` · ${loaderType} ${loaderVersion}` : " · Vanilla"}
+                        </p>
+                        <button
+                            type="button"
+                            disabled={!versaoFoiAlterada || carregandoLoader || !minecraftSelecionado
+                                || (possuiLoader && !loaderSelecionado) || salvandoVersao}
+                            onClick={() => void aplicarNovaVersao()}
+                            className="flex items-center gap-2 border border-emerald-400/35 bg-emerald-400/15 px-4 py-2 text-xs font-black text-emerald-200 transition-colors hover:bg-emerald-400/25 disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                            {salvandoVersao
+                                ? <Loader2 size={13} className="animate-spin" />
+                                : <Check size={13} />}
+                            {salvandoVersao ? "Preparando versão..." : "Aplicar versão"}
+                        </button>
+                    </div>
+
+                    {mensagemVersao && (
+                        <p className="flex items-center gap-2 text-[10px] text-emerald-300/70">
+                            <Check size={12} /> {mensagemVersao}
+                        </p>
+                    )}
+                </div>
+            </section>
+
             <section className="mr-auto max-w-3xl overflow-hidden border border-white/10 bg-[#171717]">
                 <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/8 px-5 py-4">
                     <div className="flex min-w-0 items-center gap-3">

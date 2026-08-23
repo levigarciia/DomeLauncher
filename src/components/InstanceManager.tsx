@@ -28,13 +28,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "../lib/utils";
 import { ICONE_DOME_LAUNCHER } from "../lib/imagemProjeto";
+import {
+  EXTENSOES_IMAGEM_INSTANCIA,
+  prepararIconeInstancia,
+} from "../lib/iconeInstancia";
+import {
+  EVENTO_NAVEGACAO_MOUSE_LATERAL,
+} from "../lib/navegacaoMouseLateral";
+import type { DetalheNavegacaoMouseLateral } from "../lib/navegacaoMouseLateral";
 import Configuracao from "../pages/instance/Configuracao";
 import Screenshots, { ScreenshotInstancia } from "../pages/instance/Screenshots";
+import type { ProjetoConteudo } from "./ProjetoDetalheModal";
 
 interface InstanceManagerProps {
   instanceId: string;
   onBack: () => void;
   onAbrirSocial?: () => void;
+  onAbrirProjeto?: (projeto: ProjetoConteudo) => void;
   onInstanceUpdate?: (novoId?: string) => void;
 }
 
@@ -81,6 +91,12 @@ interface ConteudoInstaladoDetalhado {
   author: string;
   icon?: string;
   enabled: boolean;
+}
+
+interface AssinaturasConteudoInstalado {
+  mods: string;
+  resourcepacks: string;
+  shaders: string;
 }
 
 interface SearchResult {
@@ -146,6 +162,7 @@ const TTL_CACHE_ATUALIZACAO_MS = 1000 * 60 * 60 * 6;
 const TTL_RETENTATIVA_ENRIQUECIMENTO_MS = 1000 * 60 * 60 * 24;
 const LIMITE_ENRIQUECIMENTO_POR_CICLO = 8;
 const VERSAO_IDENTIFICACAO_CONTEUDO = 2;
+const INTERVALO_VERIFICACAO_CONTEUDO_MS = 1500;
 
 const tipoProjetoPorFiltro = (filtro: ContentFilter): TipoProjetoCache => {
   if (filtro === "resourcepacks") return "resourcepack";
@@ -281,6 +298,7 @@ export default function InstanceManager({
   instanceId,
   onBack,
   onAbrirSocial,
+  onAbrirProjeto,
   onInstanceUpdate,
 }: InstanceManagerProps) {
   const [instanceDetails, setInstanceDetails] = useState<InstanceDetails | null>(null);
@@ -316,10 +334,14 @@ export default function InstanceManager({
   // Estados para edição
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
+  const [editIcon, setEditIcon] = useState("");
   const [saving, setSaving] = useState(false);
 
   const lastSearch = useRef({ query: "", filter: "", source: "" });
+  const assinaturasConteudoRef = useRef<AssinaturasConteudoInstalado | null>(null);
+  const verificandoConteudoRef = useRef(false);
   const listaConteudoRef = useRef<HTMLDivElement | null>(null);
+  const iconInputRef = useRef<HTMLInputElement | null>(null);
   const arrasteIndicadorRef = useRef<{
     ponteiroId: number;
     inicioY: number;
@@ -334,6 +356,27 @@ export default function InstanceManager({
   }, [instanceId]);
 
   useEffect(() => {
+    const navegarEntreConteudos = (evento: Event) => {
+      if (activeTab !== "content") return;
+
+      const eventoNavegacao = evento as CustomEvent<DetalheNavegacaoMouseLateral>;
+      const deveMostrarInstalados =
+        eventoNavegacao.detail.direcao === -1 && viewMode === "browse";
+      const deveAdicionarConteudo =
+        eventoNavegacao.detail.direcao === 1 && viewMode === "installed";
+      if (!deveMostrarInstalados && !deveAdicionarConteudo) return;
+
+      evento.preventDefault();
+      setViewMode(deveMostrarInstalados ? "installed" : "browse");
+    };
+
+    window.addEventListener(EVENTO_NAVEGACAO_MOUSE_LATERAL, navegarEntreConteudos);
+    return () => {
+      window.removeEventListener(EVENTO_NAVEGACAO_MOUSE_LATERAL, navegarEntreConteudos);
+    };
+  }, [activeTab, viewMode]);
+
+  useEffect(() => {
     if (activeTab === "worlds") loadWorlds();
     if (activeTab === "screenshots") loadScreenshots();
     if (activeTab === "logs") loadLogs();
@@ -346,6 +389,54 @@ export default function InstanceManager({
     }
   }, [activeFilter, activeTab, instanceDetails?.id]);
 
+  useEffect(() => {
+    if (!instanceDetails) return;
+
+    let cancelado = false;
+    assinaturasConteudoRef.current = null;
+
+    const verificarAlteracoesConteudo = async () => {
+      if (verificandoConteudoRef.current) return;
+      verificandoConteudoRef.current = true;
+
+      try {
+        const assinaturas = await invoke<AssinaturasConteudoInstalado>(
+          "obter_assinaturas_conteudo_instalado",
+          { instanceId }
+        );
+        if (cancelado) return;
+
+        const anteriores = assinaturasConteudoRef.current;
+        assinaturasConteudoRef.current = assinaturas;
+        if (!anteriores) return;
+
+        const tiposAlterados = (
+          ["mods", "resourcepacks", "shaders"] as ContentFilter[]
+        ).filter((tipo) => anteriores[tipo] !== assinaturas[tipo]);
+
+        await Promise.all(
+          tiposAlterados.map((tipo) => loadInstalledContent(tipo, true))
+        );
+      } catch (error) {
+        console.error("Erro ao verificar alterações nas pastas de conteúdo:", error);
+      } finally {
+        verificandoConteudoRef.current = false;
+      }
+    };
+
+    void verificarAlteracoesConteudo();
+    const intervalo = window.setInterval(
+      verificarAlteracoesConteudo,
+      INTERVALO_VERIFICACAO_CONTEUDO_MS
+    );
+
+    return () => {
+      cancelado = true;
+      window.clearInterval(intervalo);
+      verificandoConteudoRef.current = false;
+    };
+  }, [instanceDetails?.id, instanceId]);
+
   // Verificar se instância é vanilla (não mostrar mods/shaders)
   // Corrigido: usar loaderType (camelCase) que vem do backend
   const isVanilla = !instanceDetails?.loaderType || 
@@ -357,7 +448,7 @@ export default function InstanceManager({
     if (viewMode === "browse") {
       searchContent(searchQuery);
     }
-  }, [viewMode, activeFilter, browseSource]);
+  }, [viewMode, activeFilter, browseSource, instanceDetails?.version, instanceDetails?.loaderType]);
 
   useEffect(() => {
     setArquivosSelecionados(new Set());
@@ -385,14 +476,18 @@ export default function InstanceManager({
       setInstanceDetails(details);
       // Preencher campos de edição
       setEditName(details.name);
+      setEditIcon(details.icon || "");
     } catch (error) {
       console.error("Erro ao carregar detalhes:", error);
     }
   };
 
   // Função genérica para carregar conteúdo instalado (mods, resourcepacks, shaders)
-  const loadInstalledContent = async (contentType: ContentFilter) => {
-    setLoading(true);
+  const loadInstalledContent = async (
+    contentType: ContentFilter,
+    silencioso = false
+  ) => {
+    if (!silencioso) setLoading(true);
     try {
       const detalhes = await invoke<ConteudoInstaladoDetalhado[]>(
         "obter_conteudo_instalado_detalhado",
@@ -453,7 +548,7 @@ export default function InstanceManager({
     } catch (error) {
       console.error(`Erro ao carregar ${contentType}:`, error);
     } finally {
-      setLoading(false);
+      if (!silencioso) setLoading(false);
     }
   };
 
@@ -927,6 +1022,7 @@ export default function InstanceManager({
   };
 
   const searchContent = async (query: string) => {
+    if (!instanceDetails) return;
     lastSearch.current = { query, filter: activeFilter, source: browseSource };
     setSearching(true);
     try {
@@ -937,11 +1033,14 @@ export default function InstanceManager({
       };
       const plataforma = browseSource === "curseforge" ? "curseforge" : "modrinth";
       const tipoConteudo = typeMap[activeFilter];
+      const loaderInstancia = instanceDetails.loaderType?.trim().toLowerCase();
 
       const resultados: any[] = await invoke("search_mods_online", {
         query,
         platform: plataforma,
         contentType: tipoConteudo,
+        gameVersion: instanceDetails.version,
+        loader: tipoConteudo === "mod" && loaderInstancia ? loaderInstancia : null,
       });
 
       setSearchResults(
@@ -1072,6 +1171,7 @@ export default function InstanceManager({
             file_name: file.filename,
             platform: "modrinth",
             dependencies: [],
+            version_id: version.id,
           },
         });
       } else {
@@ -1269,6 +1369,7 @@ export default function InstanceManager({
         let downloadUrl = item.updateDownloadUrl;
         let fileName = item.updateFileName;
         let latestVersion = item.latestVersion;
+        let versionId: string | undefined;
 
         if (!downloadUrl || !fileName) {
           const params = new URLSearchParams();
@@ -1293,6 +1394,7 @@ export default function InstanceManager({
           downloadUrl = String(arquivoAlvo.url);
           fileName = String(arquivoAlvo.filename);
           latestVersion = String(versaoAlvo?.version_number || latestVersion || "");
+          versionId = versaoAlvo?.id ? String(versaoAlvo.id) : undefined;
         }
 
         if (tipoProjeto === "mod") {
@@ -1308,6 +1410,7 @@ export default function InstanceManager({
               file_name: fileName,
               platform: "modrinth",
               dependencies: [],
+              version_id: versionId,
             },
           });
         } else {
@@ -1409,6 +1512,13 @@ export default function InstanceManager({
         });
       }
 
+      if (editIcon && editIcon !== instanceDetails.icon) {
+        await invoke("update_instance_icon", {
+          instanceId: idAtual,
+          icon: editIcon,
+        });
+      }
+
       setIsEditing(false);
       if (idAtual !== instanceId) {
         onInstanceUpdate?.(idAtual);
@@ -1422,6 +1532,49 @@ export default function InstanceManager({
       alert(`Erro ao salvar: ${error}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const abrirPaginaProjeto = (item: SearchResult) => {
+    if (!onAbrirProjeto) return;
+
+    onAbrirProjeto({
+      id: item.id,
+      title: item.title,
+      description: item.description,
+      icon_url: item.icon_url || "",
+      author: item.author,
+      slug: item.slug,
+      source: browseSource,
+      project_type: tipoProjetoPorFiltro(activeFilter),
+      downloads: item.downloads,
+    });
+  };
+
+  const startEditingInstance = () => {
+    if (!instanceDetails) return;
+    setEditName(instanceDetails.name);
+    setEditIcon(instanceDetails.icon || "");
+    setIsEditing(true);
+  };
+
+  const cancelEditingInstance = () => {
+    if (instanceDetails) {
+      setEditName(instanceDetails.name);
+      setEditIcon(instanceDetails.icon || "");
+    }
+    setIsEditing(false);
+  };
+
+  const handleInstanceIconChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    try {
+      setEditIcon(await prepararIconeInstancia(file));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Não foi possível preparar a imagem.");
     }
   };
 
@@ -1610,10 +1763,9 @@ export default function InstanceManager({
 
   // Ajustar filtro se necessário
   useEffect(() => {
-    if (isVanilla && activeFilter !== "resourcepacks") {
-      setActiveFilter("resourcepacks");
-    }
-  }, [isVanilla]);
+    if (!instanceDetails) return;
+    setActiveFilter(isVanilla ? "resourcepacks" : "mods");
+  }, [instanceDetails?.id, isVanilla]);
 
   if (!instanceDetails) {
     return (
@@ -1644,15 +1796,28 @@ export default function InstanceManager({
 
             {/* Ícone editável */}
             <div className="relative group">
+              <input
+                ref={iconInputRef}
+                type="file"
+                accept={EXTENSOES_IMAGEM_INSTANCIA}
+                onChange={(event) => void handleInstanceIconChange(event)}
+                className="hidden"
+              />
               <div className="w-14 h-14 rounded-xl bg-[#1a1a1c] border border-white/10 overflow-hidden flex items-center justify-center">
                 <img
-                  src={instanceDetails.icon || ICONE_DOME_LAUNCHER}
+                  src={(isEditing ? editIcon : instanceDetails.icon) || ICONE_DOME_LAUNCHER}
                   alt=""
                   className="w-full h-full object-contain p-1"
                 />
               </div>
               {isEditing && (
-                <button className="absolute inset-0 bg-black/60 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  type="button"
+                  onClick={() => iconInputRef.current?.click()}
+                  aria-label="Alterar imagem da instância"
+                  title="Alterar imagem"
+                  className="absolute inset-0 bg-black/60 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                >
                   <Pencil size={16} className="text-white" />
                 </button>
               )}
@@ -1671,7 +1836,7 @@ export default function InstanceManager({
                 <div className="flex min-w-0 items-center gap-2">
                   <h1 className="truncate text-xl font-bold text-white">{instanceDetails.name}</h1>
                   <button 
-                    onClick={() => setIsEditing(true)}
+                    onClick={startEditingInstance}
                     className="p-1 rounded hover:bg-white/10 text-white/30 hover:text-white transition-colors"
                   >
                     <Pencil size={14} />
@@ -1708,7 +1873,7 @@ export default function InstanceManager({
             {isEditing ? (
               <>
                 <button
-                  onClick={() => setIsEditing(false)}
+                  onClick={cancelEditingInstance}
                   className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 transition-colors"
                 >
                   Cancelar
@@ -1745,7 +1910,7 @@ export default function InstanceManager({
                     <div className="absolute right-0 top-full mt-2 w-56 bg-[#1a1a1c] border border-white/10 rounded-xl shadow-xl z-50">
                       <div className="p-2">
                         <button 
-                          onClick={() => { setIsEditing(true); setShowMoreMenu(false); }}
+                          onClick={() => { startEditingInstance(); setShowMoreMenu(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-sm flex items-center gap-2"
                         >
                           <Pencil size={14} className="text-white/40" />
@@ -2156,30 +2321,28 @@ export default function InstanceManager({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-4">
                             <div>
-                              <h3 className="font-bold text-white group-hover:text-emerald-400 transition-colors">
+                              <button
+                                type="button"
+                                onClick={() => abrirPaginaProjeto(item)}
+                                className="cursor-pointer text-left font-bold text-white transition-colors hover:text-emerald-400"
+                              >
                                 {item.title}
-                              </h3>
+                              </button>
                               <p className="text-xs text-white/40">
                                 por {item.author} • via <span className={browseSource === "modrinth" ? "text-emerald-400" : "text-orange-400"}>{browseSource}</span>
                               </p>
                             </div>
 
-                            {(() => {
-                              const isInstalled = projetoJaInstalado(item);
-                              
-                              if (isInstalled) {
-                                return (
-                                  <button
-                                    disabled
-                                    className="px-4 py-2 rounded-xl text-sm font-bold bg-white/10 text-white/50 flex items-center gap-2 shrink-0 cursor-not-allowed"
-                                  >
-                                    <Download size={14} />
-                                    Instalado
-                                  </button>
-                                );
-                              }
-                              
-                              return (
+                            <div className="flex shrink-0 items-center gap-2">
+                              {projetoJaInstalado(item) ? (
+                                <button
+                                  disabled
+                                  className="flex shrink-0 cursor-not-allowed items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-white/50"
+                                >
+                                  <Download size={14} />
+                                  Instalado
+                                </button>
+                              ) : (
                                 <button
                                   onClick={() => installContent(item)}
                                   disabled={installing === item.id}
@@ -2202,8 +2365,8 @@ export default function InstanceManager({
                                     </>
                                   )}
                                 </button>
-                              );
-                            })()}
+                              )}
+                            </div>
                           </div>
 
                           <p className="text-sm text-white/50 line-clamp-2 mt-2">
@@ -2322,14 +2485,18 @@ export default function InstanceManager({
           </div>
         )}
 
-        {activeTab === "configuration" && instanceDetails && !isVanilla && (
+        {activeTab === "configuration" && instanceDetails && (
           <Configuracao
             instanceId={instanceId}
+            minecraftVersion={instanceDetails.version}
+            loaderType={instanceDetails.loaderType ?? instanceDetails.mcType}
+            loaderVersion={instanceDetails.loaderVersion}
             memoriaPersonalizada={instanceDetails.memory}
             argumentosJvm={instanceDetails.javaArgs}
             largura={instanceDetails.width}
             altura={instanceDetails.height}
             onSalvar={loadInstanceDetails}
+            onVersaoAlterada={() => onInstanceUpdate?.()}
           />
         )}
 
@@ -2337,7 +2504,6 @@ export default function InstanceManager({
           <Screenshots
             screenshots={screenshots}
             carregando={carregandoScreenshots}
-            onAtualizar={loadScreenshots}
             onExcluir={excluirScreenshot}
           />
         )}

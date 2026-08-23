@@ -1,5 +1,7 @@
 use super::*;
 use base64::Engine as _;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek};
 
 const LIMITE_METADADOS_BYTES: u64 = 1024 * 1024;
@@ -14,6 +16,14 @@ pub(crate) struct ConteudoInstaladoDetalhado {
     pub author: String,
     pub icon: Option<String>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AssinaturasConteudoInstalado {
+    pub mods: String,
+    pub resourcepacks: String,
+    pub shaders: String,
 }
 
 #[derive(Default)]
@@ -49,6 +59,67 @@ pub(crate) async fn obter_conteudo_instalado_detalhado(
     })
     .await
     .map_err(|e| format!("Falha ao inspecionar conteúdo instalado: {}", e))?
+}
+
+#[tauri::command]
+pub(crate) fn obter_assinaturas_conteudo_instalado(
+    instance_id: String,
+    state: State<'_, LauncherState>,
+) -> Result<AssinaturasConteudoInstalado, String> {
+    let instancia = obter_instancia_por_id(&state, &instance_id)?;
+
+    Ok(AssinaturasConteudoInstalado {
+        mods: calcular_assinatura_pasta(&instancia.path.join("mods"), "mods", false)?,
+        resourcepacks: calcular_assinatura_pasta(
+            &instancia.path.join("resourcepacks"),
+            "resourcepacks",
+            true,
+        )?,
+        shaders: calcular_assinatura_pasta(&instancia.path.join("shaderpacks"), "shaders", true)?,
+    })
+}
+
+fn calcular_assinatura_pasta(
+    caminho_pasta: &std::path::Path,
+    tipo: &str,
+    aceita_diretorio: bool,
+) -> Result<String, String> {
+    if !caminho_pasta.is_dir() {
+        return Ok("0".to_string());
+    }
+
+    let mut entradas = std::fs::read_dir(caminho_pasta)
+        .map_err(|e| format!("Erro ao verificar conteúdo instalado: {}", e))?
+        .flatten()
+        .filter_map(|entrada| {
+            let nome = entrada.file_name().to_string_lossy().to_string();
+            let nome_minusculo = nome.to_lowercase();
+            let caminho = entrada.path();
+            let arquivo_compativel = if tipo == "mods" {
+                nome_minusculo.ends_with(".jar") || nome_minusculo.ends_with(".jar.disabled")
+            } else {
+                nome_minusculo.ends_with(".zip") || nome_minusculo.ends_with(".zip.disabled")
+            };
+
+            if !(arquivo_compativel || aceita_diretorio && caminho.is_dir()) {
+                return None;
+            }
+
+            let metadados = entrada.metadata().ok();
+            let tamanho = metadados.as_ref().map_or(0, std::fs::Metadata::len);
+            let modificado = metadados
+                .and_then(|valor| valor.modified().ok())
+                .and_then(|valor| valor.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |duracao| duracao.as_nanos());
+
+            Some((nome_minusculo, caminho.is_dir(), tamanho, modificado))
+        })
+        .collect::<Vec<_>>();
+
+    entradas.sort_unstable();
+    let mut hasher = DefaultHasher::new();
+    entradas.hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 fn listar_conteudo_da_pasta(
@@ -457,7 +528,7 @@ fn converter_icone_data_uri(bytes: &[u8], nome: &str) -> String {
 
 #[cfg(test)]
 mod testes {
-    use super::{inspecionar_arquivo_compactado, inspecionar_conteudo};
+    use super::{calcular_assinatura_pasta, inspecionar_arquivo_compactado, inspecionar_conteudo};
     use std::io::Write;
 
     #[test]
@@ -545,5 +616,27 @@ mod testes {
         }
 
         let _ = std::fs::remove_file(caminho);
+    }
+
+    #[test]
+    fn assinatura_muda_apenas_com_conteudo_compativel() {
+        let pasta =
+            std::env::temp_dir().join(format!("dome-assinatura-conteudo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&pasta).expect("deve criar pasta temporária");
+
+        let assinatura_vazia = calcular_assinatura_pasta(&pasta, "mods", false)
+            .expect("deve calcular assinatura vazia");
+        std::fs::write(pasta.join("ignorado.txt"), b"ignorado")
+            .expect("deve criar arquivo ignorado");
+        let assinatura_ignorada = calcular_assinatura_pasta(&pasta, "mods", false)
+            .expect("deve ignorar arquivo incompatível");
+        std::fs::write(pasta.join("novo-mod.jar"), b"jar").expect("deve criar mod de teste");
+        let assinatura_com_mod =
+            calcular_assinatura_pasta(&pasta, "mods", false).expect("deve incluir mod compatível");
+
+        let _ = std::fs::remove_dir_all(pasta);
+
+        assert_eq!(assinatura_vazia, assinatura_ignorada);
+        assert_ne!(assinatura_vazia, assinatura_com_mod);
     }
 }

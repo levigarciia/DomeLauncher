@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Image, Loader2, MoreVertical, RefreshCw, Trash2, X } from "../../iconesPixelados";
-import { cn } from "../../lib/utils";
+import { Image, Loader2, MoreVertical, Trash2, X } from "../../iconesPixelados";
 
 export interface ScreenshotInstancia {
     nome: string;
@@ -11,7 +10,6 @@ export interface ScreenshotInstancia {
 interface ScreenshotsProps {
     screenshots: ScreenshotInstancia[];
     carregando: boolean;
-    onAtualizar: () => void;
     onExcluir: (screenshot: ScreenshotInstancia) => void;
 }
 
@@ -34,7 +32,6 @@ const formatarData = (valor: string): string => {
 export default function Screenshots({
     screenshots,
     carregando,
-    onAtualizar,
     onExcluir,
 }: ScreenshotsProps) {
     const [ampliada, setAmpliada] = useState<ScreenshotInstancia | null>(null);
@@ -88,21 +85,13 @@ export default function Screenshots({
 
     return (
         <div className="relative flex-1 overflow-y-auto p-6">
-            <div className="mb-5 flex items-center justify-between gap-4">
+            <div className="mb-5">
                 <div>
                     <h2 className="text-lg font-bold text-white">Screenshots</h2>
                     <p className="mt-1 text-sm text-white/40">
                         Clique para ampliar ou use o botão direito para excluir.
                     </p>
                 </div>
-                <button
-                    onClick={onAtualizar}
-                    disabled={carregando}
-                    className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/60 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-40"
-                >
-                    <RefreshCw size={14} className={cn(carregando && "animate-spin")} />
-                    Atualizar
-                </button>
             </div>
 
             {carregando ? (

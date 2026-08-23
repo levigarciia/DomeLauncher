@@ -34,6 +34,7 @@ import { EsqueletoAba } from "./components/EsqueletoCarregamento";
 import VisualizacaoInstanciaSocial from "./components/VisualizacaoInstanciaSocial";
 import type { AmigoSocial } from "./components/social/tiposSocial";
 import { aplicarCorDestaque, normalizarCorDestaque } from "./lib/corDestaque";
+import { solicitarNavegacaoMouseLateral } from "./lib/navegacaoMouseLateral";
 
 const carregarSkinManager = () =>
   import("./components/SkinManager").then((modulo) => ({ default: modulo.SkinManager }));
@@ -144,6 +145,14 @@ const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
 const INTERVALO_VERIFICACAO_INSTANCIAS_MS = 20 * 1000;
 type TipoExplorePresence = "modpack" | "mod" | "resourcepack" | "shader";
 type FonteExplorePresence = "modrinth" | "curseforge";
+interface EntradaHistoricoNavegacao {
+  aba: string;
+  projetoDetalhe?: ProjetoConteudo | null;
+  atividadeSocialDetalhe?: AmigoSocial | null;
+  abaOrigemProjeto?: AbaOrigemProjeto;
+  managedInstanceId?: string;
+}
+
 const TITULOS_ABA: Record<string, string> = {
   home: "Início",
   instances: "Biblioteca",
@@ -163,9 +172,6 @@ export default function App() {
     x: number;
     y: number;
   } | null>(null);
-  const navegarParaAba = useCallback((aba: string) => {
-    startTransition(() => setActiveTab(aba));
-  }, []);
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -201,6 +207,74 @@ export default function App() {
   const ehTelaXl = useBreakpointXl();
   const ultimaAssinaturaPresence = useRef<string>("");
   const menuContaRef = useRef<HTMLDivElement | null>(null);
+  const abaAtualRef = useRef("home");
+  const historicoNavegacaoRef = useRef<EntradaHistoricoNavegacao[]>([{ aba: "home" }]);
+  const indiceHistoricoRef = useRef(0);
+
+  const capturarEstadoNavegacao = useCallback((): EntradaHistoricoNavegacao => ({
+    aba: abaAtualRef.current,
+    projetoDetalhe,
+    atividadeSocialDetalhe,
+    abaOrigemProjeto,
+    managedInstanceId,
+  }), [abaOrigemProjeto, atividadeSocialDetalhe, managedInstanceId, projetoDetalhe]);
+
+  const aplicarEstadoNavegacao = useCallback((entrada: EntradaHistoricoNavegacao) => {
+    if ("projetoDetalhe" in entrada) setProjetoDetalhe(entrada.projetoDetalhe ?? null);
+    if ("atividadeSocialDetalhe" in entrada) {
+      setAtividadeSocialDetalhe(entrada.atividadeSocialDetalhe ?? null);
+    }
+    if (entrada.abaOrigemProjeto) setAbaOrigemProjeto(entrada.abaOrigemProjeto);
+    if (typeof entrada.managedInstanceId === "string") {
+      setManagedInstanceId(entrada.managedInstanceId);
+    }
+    abaAtualRef.current = entrada.aba;
+    startTransition(() => setActiveTab(entrada.aba));
+  }, []);
+
+  const navegarParaAba = useCallback((aba: string) => {
+    if (aba === abaAtualRef.current) return;
+
+    const historico = historicoNavegacaoRef.current;
+    historico[indiceHistoricoRef.current] = capturarEstadoNavegacao();
+    historico.splice(indiceHistoricoRef.current + 1);
+    historico.push({ aba });
+    indiceHistoricoRef.current = historico.length - 1;
+    abaAtualRef.current = aba;
+    startTransition(() => setActiveTab(aba));
+  }, [capturarEstadoNavegacao]);
+
+  const navegarNoHistorico = useCallback((direcao: -1 | 1) => {
+    const historico = historicoNavegacaoRef.current;
+    const indiceDestino = indiceHistoricoRef.current + direcao;
+    if (indiceDestino < 0 || indiceDestino >= historico.length) return;
+
+    historico[indiceHistoricoRef.current] = capturarEstadoNavegacao();
+    indiceHistoricoRef.current = indiceDestino;
+    aplicarEstadoNavegacao(historico[indiceDestino]);
+  }, [aplicarEstadoNavegacao, capturarEstadoNavegacao]);
+
+  useEffect(() => {
+    const aoPressionarBotaoMouse = (evento: MouseEvent) => {
+      if (evento.button !== 3 && evento.button !== 4) return;
+      evento.preventDefault();
+      const direcao = evento.button === 3 ? -1 : 1;
+      if (solicitarNavegacaoMouseLateral(direcao)) return;
+      navegarNoHistorico(direcao);
+    };
+    const bloquearCliqueAuxiliar = (evento: MouseEvent) => {
+      if (evento.button === 3 || evento.button === 4) evento.preventDefault();
+    };
+
+    window.addEventListener("mousedown", aoPressionarBotaoMouse, true);
+    window.addEventListener("mouseup", bloquearCliqueAuxiliar, true);
+    window.addEventListener("auxclick", bloquearCliqueAuxiliar, true);
+    return () => {
+      window.removeEventListener("mousedown", aoPressionarBotaoMouse, true);
+      window.removeEventListener("mouseup", bloquearCliqueAuxiliar, true);
+      window.removeEventListener("auxclick", bloquearCliqueAuxiliar, true);
+    };
+  }, [navegarNoHistorico]);
 
   useEffect(() => {
     if (activeTab === "instances") {
@@ -365,8 +439,13 @@ export default function App() {
   }, [menuContaAberto]);
 
   useEffect(() => {
-    if (instances.length > 0 && !selectedInstance) {
-      setSelectedInstance(instances[0]);
+    const instanciaAtualizada = selectedInstance
+      ? instances.find((instancia) => instancia.id === selectedInstance.id)
+      : null;
+    const proximaInstancia = instanciaAtualizada ?? instances[0] ?? null;
+
+    if (proximaInstancia !== selectedInstance) {
+      setSelectedInstance(proximaInstancia);
     }
   }, [instances, selectedInstance]);
 
@@ -1226,8 +1305,12 @@ export default function App() {
                 <ProjetoDetalheModal
                   projeto={projetoDetalhe}
                   instancias={instances}
+                  instanciaInicialId={
+                    abaOrigemProjeto === "instance-manager" ? managedInstanceId : undefined
+                  }
                   usuarioLogado={Boolean(user)}
                   onSolicitarLogin={() => setIsLoginOpen(true)}
+                  onInstanciaCriada={() => void fetchInstances()}
                   rotuloAcao={abaOrigemProjeto === "instances" ? "Baixar" : "Instalar"}
                   onVoltar={() => {
                     navegarParaAba(abaOrigemProjeto);
@@ -1272,6 +1355,7 @@ export default function App() {
                   instancias={instances}
                   usuarioLogado={Boolean(user)}
                   onSolicitarLogin={() => setIsLoginOpen(true)}
+                  onInstanciaCriada={() => void fetchInstances()}
                   rotuloAcao="Baixar"
                   onVoltar={() => {
                     setProjetoDetalhe(null);
@@ -1319,6 +1403,7 @@ export default function App() {
                   instanceId={managedInstanceId}
                   onBack={() => navegarParaAba("instances")}
                   onAbrirSocial={() => setSocialDrawerAberto(true)}
+                  onAbrirProjeto={(projeto) => abrirProjeto("instance-manager", projeto)}
                   onInstanceUpdate={(novoId) => {
                     if (novoId) setManagedInstanceId(novoId);
                     void fetchInstances();
@@ -1473,7 +1558,11 @@ export default function App() {
           atualizarSessaoMinecraft();
         }}
       />
-      <CreateInstanceModal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} />
+      <CreateInstanceModal
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        onCreated={() => void fetchInstances()}
+      />
       <CreatingInstancesOverlay />
       </div>
   );

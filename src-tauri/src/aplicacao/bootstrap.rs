@@ -46,6 +46,7 @@ pub fn run() {
             // Gerenciador de mods
             super::mods_conteudo::search_mods_online,
             super::mods_conteudo::buscar_detalhes_projeto_curseforge,
+            super::mods_conteudo::listar_versoes_projeto_curseforge,
             super::mods_conteudo::install_mod,
             super::mods_conteudo::install_project_file,
             super::mods_conteudo::install_curseforge_project_file,
@@ -54,10 +55,13 @@ pub fn run() {
             super::mods_conteudo::get_installed_resourcepacks,
             super::mods_conteudo::get_installed_shaders,
             super::conteudo_instalado::obter_conteudo_instalado_detalhado,
+            super::conteudo_instalado::obter_assinaturas_conteudo_instalado,
             // Gerenciamento de instâncias
             super::instancias_basicas::get_instance_details,
             super::instancias_basicas::update_instance_name,
+            super::instancias_basicas::update_instance_icon,
             super::instancias_basicas::update_instance_settings,
+            super::instancias_basicas::update_instance_version,
             super::instancias_basicas::rename_instance_folder,
             // Exportação / Importação de instâncias
             super::importacao_exportacao::exportar_instancia,

@@ -48,13 +48,20 @@ interface InstanceGroup {
   instanceIds: string[];
   icon?: string;
   format?: GroupFormat;
+  viewMode: ViewMode;
+  sortKey: SortKey;
+  sortDir: SortDir;
 }
 
 interface LibraryState {
   groups: InstanceGroup[];
-  viewMode: ViewMode;
-  sortKey: SortKey;
-  sortDir: SortDir;
+}
+
+interface LibraryStateLegado {
+  groups?: Array<Partial<InstanceGroup> & Pick<InstanceGroup, "id" | "name">>;
+  viewMode?: ViewMode;
+  sortKey?: SortKey;
+  sortDir?: SortDir;
 }
 
 interface InstanciaImportavelExterna {
@@ -137,15 +144,30 @@ async function prepararIconeGrupo(arquivo: File): Promise<string> {
 
 // Chave de storage
 const STORAGE_KEY = "dome-library-state";
+const PREFERENCIAS_GRUPO_PADRAO = {
+  viewMode: "grid" as ViewMode,
+  sortKey: "name" as SortKey,
+  sortDir: "asc" as SortDir,
+};
+const ROTULOS_ORDENACAO: Record<SortKey, string> = {
+  manual: "Manual",
+  name: "Nome",
+  last_played: "Último jogado",
+  version: "Versão",
+  loader: "Loader",
+};
 
 // Estado padrão
 const defaultState: LibraryState = {
   groups: [
-    { id: "default", name: "Instâncias", collapsed: false, instanceIds: [] },
+    {
+      id: "default",
+      name: "Instâncias",
+      collapsed: false,
+      instanceIds: [],
+      ...PREFERENCIAS_GRUPO_PADRAO,
+    },
   ],
-  viewMode: "grid",
-  sortKey: "name",
-  sortDir: "asc",
 };
 
 // Carregar estado salvo
@@ -153,12 +175,18 @@ function carregarEstado(): LibraryState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const estado = JSON.parse(raw) as LibraryState;
+      const estado = JSON.parse(raw) as LibraryStateLegado;
       return {
-        ...estado,
         groups: (estado.groups || []).map((grupo) => ({
-          ...grupo,
+          id: grupo.id,
+          name: grupo.name,
+          collapsed: Boolean(grupo.collapsed),
           instanceIds: deduplicarIds(grupo.instanceIds || []),
+          icon: grupo.icon,
+          format: grupo.format,
+          viewMode: grupo.viewMode || estado.viewMode || PREFERENCIAS_GRUPO_PADRAO.viewMode,
+          sortKey: grupo.sortKey || estado.sortKey || PREFERENCIAS_GRUPO_PADRAO.sortKey,
+          sortDir: grupo.sortDir || estado.sortDir || PREFERENCIAS_GRUPO_PADRAO.sortDir,
         })),
       };
     }
@@ -240,7 +268,6 @@ export default function LibraryPage({
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
   const [grupoArrastadoId, setGrupoArrastadoId] = useState<string | null>(null);
-  const [menuAberto, setMenuAberto] = useState<string | null>(null);
   const [menuContexto, setMenuContexto] = useState<MenuContextoInstancia | null>(null);
   const [menuContextoGrupo, setMenuContextoGrupo] = useState<MenuContextoGrupo | null>(null);
   const [menuContextoArea, setMenuContextoArea] = useState<MenuContextoArea | null>(null);
@@ -279,6 +306,7 @@ export default function LibraryPage({
   const instanciaArrastadaRef = useRef<string | null>(null);
   const grupoArrastadoRef = useRef<string | null>(null);
   const limparArrastoPonteiroRef = useRef<(() => void) | null>(null);
+  const idsInstanciasVisiveis = new Set(instances.map((instancia) => instancia.id));
 
   // Salvar estado ao mudar
   useEffect(() => {
@@ -361,6 +389,7 @@ export default function LibraryPage({
             name: "Instâncias",
             collapsed: false,
             instanceIds: orfaos,
+            ...PREFERENCIAS_GRUPO_PADRAO,
           });
         }
         return { ...prev, groups: grupos };
@@ -368,34 +397,22 @@ export default function LibraryPage({
       grupoDestinoCriacaoRef.current = null;
     }
 
-    // Limpar IDs de instâncias que não existem mais
-    const idsExistentes = new Set(instances.map((i) => i.id));
-    setState((prev) => ({
-      ...prev,
-      groups: prev.groups.map((g) => ({
-        ...g,
-        instanceIds: deduplicarIds(
-          g.instanceIds.filter((id) => idsExistentes.has(id))
-        ),
-      })),
-    }));
+    // IDs ausentes permanecem salvos para restaurar os grupos ao trocar a pasta de instâncias.
   }, [instances]);
 
   // Ordenar instâncias
   const ordenar = useCallback(
-    (ids: string[]): Instance[] => {
+    (ids: string[], sortKey: SortKey, sortDir: SortDir): Instance[] => {
       const map = new Map(instances.map((i) => [i.id, i]));
       const lista = deduplicarIds(ids)
         .map((id) => map.get(id))
         .filter(Boolean) as Instance[];
 
-      if (state.sortKey === "manual") return lista;
+      if (sortKey === "manual") return lista;
 
       lista.sort((a, b) => {
         let cmp = 0;
-        switch (state.sortKey) {
-          case "manual":
-            break;
+        switch (sortKey) {
           case "name":
             cmp = a.name.localeCompare(b.name);
             break;
@@ -413,12 +430,12 @@ export default function LibraryPage({
             );
             break;
         }
-        return state.sortDir === "asc" ? cmp : -cmp;
+        return sortDir === "asc" ? cmp : -cmp;
       });
 
       return lista;
     },
-    [instances, state.sortKey, state.sortDir]
+    [instances]
   );
 
   // Filtrar por busca
@@ -443,7 +460,13 @@ export default function LibraryPage({
       ...prev,
       groups: [
         ...prev.groups,
-        { id, name: "Novo Grupo", collapsed: false, instanceIds: [] },
+        {
+          id,
+          name: "Novo Grupo",
+          collapsed: false,
+          instanceIds: [],
+          ...PREFERENCIAS_GRUPO_PADRAO,
+        },
       ],
     }));
     setEditandoGrupo(id);
@@ -556,11 +579,11 @@ export default function LibraryPage({
       // Adicionar no grupo alvo
       return {
         ...prev,
-        sortKey: "manual",
         groups: gruposSemItem.map((g) =>
           g.id === targetGroupId
             ? {
                 ...g,
+                sortKey: "manual",
                 instanceIds: deduplicarIds([...g.instanceIds, idArrastado]),
               }
             : g
@@ -591,7 +614,6 @@ export default function LibraryPage({
 
       return {
         ...prev,
-        sortKey: "manual",
         groups: gruposSemInstancia.map((grupo) => {
           if (grupo.id !== targetGroupId) return grupo;
 
@@ -601,7 +623,7 @@ export default function LibraryPage({
             ? ids.length
             : indiceDestino + (movendoParaFrenteNoMesmoGrupo ? 1 : 0);
           ids.splice(indiceInsercao, 0, instanceId);
-          return { ...grupo, instanceIds: deduplicarIds(ids) };
+          return { ...grupo, sortKey: "manual", instanceIds: deduplicarIds(ids) };
         }),
       };
     });
@@ -788,21 +810,28 @@ export default function LibraryPage({
   }, [grupoArrastadoId]);
 
   // Alternar ordenação
-  const alternarSort = (key: SortKey) => {
+  const alternarSortGrupo = (grupoId: string, key: SortKey) => {
     setState((prev) => ({
       ...prev,
-      sortKey: key,
-      sortDir: prev.sortKey === key && prev.sortDir === "asc" ? "desc" : "asc",
+      groups: prev.groups.map((grupo) =>
+        grupo.id === grupoId
+          ? {
+              ...grupo,
+              sortKey: key,
+              sortDir: grupo.sortKey === key && grupo.sortDir === "asc" ? "desc" : "asc",
+            }
+          : grupo
+      ),
     }));
   };
 
-  // Labels de sort
-  const sortLabels: Record<SortKey, string> = {
-    manual: "Manual",
-    name: "Nome",
-    last_played: "Último jogado",
-    version: "Versão",
-    loader: "Loader",
+  const alterarModoExibicaoGrupo = (grupoId: string, viewMode: ViewMode) => {
+    setState((prev) => ({
+      ...prev,
+      groups: prev.groups.map((grupo) =>
+        grupo.id === grupoId ? { ...grupo, viewMode } : grupo
+      ),
+    }));
   };
 
   const carregarInstanciasImportaveis = async (
@@ -963,7 +992,7 @@ export default function LibraryPage({
 
       if (resultado.sucesso) {
         alert(`✅ ${resultado.mensagem}`);
-        window.location.reload();
+        await onAtualizarInstancias();
       } else {
         alert(`❌ ${resultado.mensagem}`);
       }
@@ -1179,7 +1208,9 @@ export default function LibraryPage({
               <p className="mt-0.5 truncate text-[10px] text-white/40">
                 {instanciaNoCursor
                   ? `${instanciaNoCursor.loader_type || instanciaNoCursor.mc_type} ${instanciaNoCursor.version}`
-                  : `${grupoNoCursor?.instanceIds.length || 0} instâncias`}
+                  : `${grupoNoCursor?.instanceIds.filter((id) =>
+                      idsInstanciasVisiveis.has(id)
+                    ).length || 0} instâncias`}
               </p>
             </div>
             <span className="h-2 w-2 shrink-0 bg-emerald-300 shadow-[0_0_12px_rgba(110,231,183,0.8)]" />
@@ -1208,75 +1239,6 @@ export default function LibraryPage({
               <X size={14} />
             </button>
           )}
-        </div>
-
-        {/* Ordenação */}
-        <div className="relative">
-          <button
-            onClick={() =>
-              setMenuAberto(menuAberto === "sort" ? null : "sort")
-            }
-            className="flex items-center gap-1.5 px-3 py-2 bg-white/3 border border-white/5 rounded-xl text-xs text-white/40 hover:text-white/60 hover:bg-white/5 transition-all"
-          >
-            <ArrowUpDown size={13} />
-            {sortLabels[state.sortKey]}
-          </button>
-          <AnimatePresence>
-            {menuAberto === "sort" && (
-              <motion.div
-                initial={{ opacity: 0, y: 4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 4 }}
-                className="absolute right-0 top-full mt-1 bg-[#1a1a1c] border border-white/10 rounded-xl p-1 z-50 min-w-[140px] shadow-xl"
-              >
-                {(Object.keys(sortLabels) as SortKey[]).map((key) => (
-                  <button
-                    key={key}
-                    onClick={() => {
-                      alternarSort(key);
-                      setMenuAberto(null);
-                    }}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs transition-all ${
-                      state.sortKey === key
-                        ? "text-emerald-400 bg-emerald-500/10"
-                        : "text-white/50 hover:bg-white/5 hover:text-white/70"
-                    }`}
-                  >
-                    {sortLabels[key]}
-                    {state.sortKey === key && key !== "manual" && (
-                      <span className="ml-auto text-[10px] opacity-50">
-                        {state.sortDir === "asc" ? "↑" : "↓"}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* View mode */}
-        <div className="flex bg-white/3 border border-white/5 rounded-xl overflow-hidden">
-          <button
-            onClick={() => setState((p) => ({ ...p, viewMode: "grid" }))}
-            className={`p-2 transition-all ${
-              state.viewMode === "grid"
-                ? "text-emerald-400 bg-emerald-500/10"
-                : "text-white/30 hover:text-white/50"
-            }`}
-          >
-            <LayoutGrid size={14} />
-          </button>
-          <button
-            onClick={() => setState((p) => ({ ...p, viewMode: "list" }))}
-            className={`p-2 transition-all ${
-              state.viewMode === "list"
-                ? "text-emerald-400 bg-emerald-500/10"
-                : "text-white/30 hover:text-white/50"
-            }`}
-          >
-            <List size={14} />
-          </button>
         </div>
 
         {/* Importar / Exportar */}
@@ -1381,12 +1343,16 @@ export default function LibraryPage({
             <div className="col-span-12">
               <SecaoImportacoesEmAndamento
                 instancias={instanciasEmImportacao}
-                viewMode={state.viewMode}
+                viewMode="grid"
               />
             </div>
           )}
           {state.groups.map((grupo) => {
-            const instanciasOrdenadas = ordenar(grupo.instanceIds);
+            const instanciasOrdenadas = ordenar(
+              grupo.instanceIds,
+              grupo.sortKey,
+              grupo.sortDir
+            );
             const instanciasFiltradas = filtrar(instanciasOrdenadas);
 
             // Se filtrando e grupo vazio, ocultar
@@ -1397,7 +1363,7 @@ export default function LibraryPage({
                 key={grupo.id}
                 grupo={grupo}
                 instances={instanciasFiltradas}
-                viewMode={state.viewMode}
+                viewMode={grupo.viewMode}
                 editando={editandoGrupo === grupo.id}
                 nomeEdit={nomeGrupo}
                 dragOver={dragOverGroup === grupo.id}
@@ -1408,6 +1374,10 @@ export default function LibraryPage({
                 onNomeChange={setNomeGrupo}
                 onNomeSalvar={() => salvarNomeGrupo(grupo.id)}
                 onRenomear={() => iniciarRenomeacaoGrupo(grupo)}
+                onAlterarOrdenacao={(key) => alternarSortGrupo(grupo.id, key)}
+                onAlterarModoExibicao={(viewMode) =>
+                  alterarModoExibicaoGrupo(grupo.id, viewMode)
+                }
                 onAbrirMenuContextoGrupo={(evento) => abrirMenuContextoGrupo(evento, grupo)}
                 onSelect={selecionarInstancia}
                 onAbrirGerenciador={onAbrirGerenciadorInstancia}
@@ -1458,8 +1428,9 @@ export default function LibraryPage({
               <div className="px-4 py-4">
                 <p className="text-xs leading-relaxed text-white/55">
                   O grupo <span className="font-bold text-white/85">{grupoExclusao.name}</span> será
-                  excluído. As {grupoExclusao.instanceIds.length} instâncias serão movidas para outro
-                  grupo e nenhum arquivo será apagado.
+                  excluído. As {grupoExclusao.instanceIds.filter((id) =>
+                    idsInstanciasVisiveis.has(id)
+                  ).length} instâncias serão movidas para outro grupo e nenhum arquivo será apagado.
                 </p>
               </div>
               <div className="flex justify-end gap-2 border-t border-white/8 px-4 py-3">
@@ -2209,6 +2180,8 @@ function GrupoWidget({
   onNomeChange,
   onNomeSalvar,
   onRenomear,
+  onAlterarOrdenacao,
+  onAlterarModoExibicao,
   onAbrirMenuContextoGrupo,
   onSelect,
   onAbrirGerenciador,
@@ -2233,6 +2206,8 @@ function GrupoWidget({
   onNomeChange: (v: string) => void;
   onNomeSalvar: () => void;
   onRenomear: () => void;
+  onAlterarOrdenacao: (key: SortKey) => void;
+  onAlterarModoExibicao: (viewMode: ViewMode) => void;
   onAbrirMenuContextoGrupo: (evento: React.MouseEvent) => void;
   onSelect: (instance: Instance) => void;
   onAbrirGerenciador: (instance: Instance) => void;
@@ -2246,15 +2221,24 @@ function GrupoWidget({
   instanciaAtivaId: string | null;
   agoraSegundos: number;
 }) {
+  const [menuOrdenacaoAberto, setMenuOrdenacaoAberto] = useState(false);
+
   return (
     <motion.div
       layout="position"
-      transition={{ layout: { duration: 0.16, ease: [0.2, 0.8, 0.2, 1] } }}
+      transition={{
+        layout: {
+          type: "spring",
+          stiffness: 190,
+          damping: 28,
+          mass: 0.9,
+        },
+      }}
       onContextMenu={onAbrirMenuContextoGrupo}
       data-grupo-biblioteca-id={grupo.id}
-      style={{ borderColor: dragOver ? "var(--cor-acento-400)" : "var(--cor-grupos)" }}
+      style={{ borderColor: "var(--cor-grupos)" }}
       className={cn(
-        "col-span-12 rounded-xl border border-dotted transition-[border-color,background-color,opacity]",
+        "col-span-12 rounded-xl border border-dotted transition-[border-color,background-color,opacity] duration-300",
         grupo.format === "wide" && "lg:col-span-8",
         grupo.format === "half" && "md:col-span-6",
         grupo.format === "compact" && "md:col-span-6 xl:col-span-4",
@@ -2322,6 +2306,100 @@ function GrupoWidget({
             </span>
           </div>
         )}
+
+        <div
+          className="ml-auto flex shrink-0 items-center gap-2"
+          onPointerDown={(evento) => evento.stopPropagation()}
+        >
+          <div className="relative">
+            <button
+              type="button"
+              onClick={(evento) => {
+                evento.stopPropagation();
+                setMenuOrdenacaoAberto((aberto) => !aberto);
+              }}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border border-white/5 bg-white/3 px-2 py-1.5",
+                "text-[10px] text-white/40 transition-colors hover:bg-white/5 hover:text-white/65"
+              )}
+              aria-expanded={menuOrdenacaoAberto}
+              aria-label={`Ordenar grupo ${grupo.name}`}
+            >
+              <ArrowUpDown size={11} />
+              {ROTULOS_ORDENACAO[grupo.sortKey]}
+            </button>
+            <AnimatePresence>
+              {menuOrdenacaoAberto && (
+                <motion.div
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 4 }}
+                  className="absolute right-0 top-full z-50 mt-1 min-w-[140px] rounded-xl border border-white/10 bg-[#1a1a1c] p-1 shadow-xl"
+                >
+                  {(Object.keys(ROTULOS_ORDENACAO) as SortKey[]).map((key) => (
+                    <button
+                      type="button"
+                      key={key}
+                      onClick={(evento) => {
+                        evento.stopPropagation();
+                        onAlterarOrdenacao(key);
+                        setMenuOrdenacaoAberto(false);
+                      }}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-xs transition-colors",
+                        grupo.sortKey === key
+                          ? "bg-emerald-500/10 text-emerald-400"
+                          : "text-white/50 hover:bg-white/5 hover:text-white/70"
+                      )}
+                    >
+                      {ROTULOS_ORDENACAO[key]}
+                      {grupo.sortKey === key && key !== "manual" && (
+                        <span className="ml-auto text-[10px] opacity-50">
+                          {grupo.sortDir === "asc" ? "↑" : "↓"}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <div className="flex overflow-hidden rounded-lg border border-white/5 bg-white/3">
+            <button
+              type="button"
+              onClick={(evento) => {
+                evento.stopPropagation();
+                onAlterarModoExibicao("grid");
+              }}
+              className={cn(
+                "p-1.5 transition-colors",
+                viewMode === "grid"
+                  ? "bg-emerald-500/10 text-emerald-400"
+                  : "text-white/30 hover:text-white/50"
+              )}
+              aria-label={`Exibir ${grupo.name} em grade`}
+            >
+              <LayoutGrid size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(evento) => {
+                evento.stopPropagation();
+                onAlterarModoExibicao("list");
+              }}
+              className={cn(
+                "p-1.5 transition-colors",
+                viewMode === "list"
+                  ? "bg-emerald-500/10 text-emerald-400"
+                  : "text-white/30 hover:text-white/50"
+              )}
+              aria-label={`Exibir ${grupo.name} em lista`}
+            >
+              <List size={12} />
+            </button>
+          </div>
+        </div>
 
       </div>
 

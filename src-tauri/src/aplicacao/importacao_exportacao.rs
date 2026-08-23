@@ -660,7 +660,10 @@ fn gerar_nome_instancia_unico(state: &LauncherState, nome_base: &str) -> String 
         .map(|instancia| instancia.id)
         .collect();
 
-    if let Ok(entradas) = std::fs::read_dir(&state.instances_path) {
+    if let Ok(entradas) = state
+        .caminho_instancias()
+        .and_then(|caminho| std::fs::read_dir(caminho).map_err(|erro| erro.to_string()))
+    {
         for entrada in entradas.flatten() {
             if entrada.path().is_dir() {
                 ids_existentes.insert(entrada.file_name().to_string_lossy().to_string());
@@ -720,8 +723,11 @@ async fn resolver_versao_loader_importacao(
         return Ok(versao.to_string());
     }
 
-    let resposta =
-        super::instancias_criacao::get_loader_versions(loader_normalizado.to_string()).await?;
+    let resposta = super::instancias_criacao::get_loader_versions(
+        loader_normalizado.to_string(),
+        Some(versao_minecraft.to_string()),
+    )
+    .await?;
     let versoes: Vec<String> = resposta.versions.into_iter().map(|v| v.version).collect();
     if loader_normalizado == "forge" {
         if let Some(versao) = versoes

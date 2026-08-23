@@ -178,6 +178,7 @@ async fn launch_instance_com_opcoes(
                         .loader_version
                         .as_ref()
                         .unwrap_or(&"latest".to_string()),
+                    &instance_path,
                 )
                 .await?;
             }

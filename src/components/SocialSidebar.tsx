@@ -13,7 +13,7 @@ import {
   removeCreatingInstance,
 } from '../stores/creatingInstances';
 import { cn } from '../lib/utils';
-import { ChevronLeft, Gamepad2, User } from '../iconesPixelados';
+import { ChevronLeft, User } from '../iconesPixelados';
 import { EsqueletoSocial } from './EsqueletoCarregamento';
 import { ListaAmigosAgrupada } from './social/ListaAmigosAgrupada';
 import { PainelChatSocial } from './social/PainelChatSocial';
@@ -1581,6 +1581,7 @@ export default function SocialSidebar({
       if (loaderNormalizado !== 'vanilla') {
         const respostaLoader = await invoke<LoaderVersionsResponse>('get_loader_versions', {
           loaderType: loaderNormalizado,
+          minecraftVersion: versaoMinecraft,
         });
         loaderVersion =
           escolherVersaoLoaderIdeal(loaderNormalizado, respostaLoader.versions || [], versaoMinecraft) || undefined;
@@ -1621,7 +1622,9 @@ export default function SocialSidebar({
       });
 
       setMensagemSync('Modpack exato instalado com sucesso.');
-      window.location.reload();
+      window.dispatchEvent(new CustomEvent(EVENTO_INSTANCIAS_ATUALIZADAS, {
+        detail: { instanciaId: idInstancia },
+      }));
     } catch (erro) {
       setMensagemSync(mensagemErro(erro, 'Falha ao instalar mesma instancia.'));
     }
@@ -1669,9 +1672,6 @@ export default function SocialSidebar({
 
   if (recuado) {
     const statusPerfil: StatusPresenca = aparecerOffline ? 'offline' : statusManual;
-    const amigosJogando = amigosOnline.filter(
-      (amigo) => amigo.atividadeAtual && amigo.atividadeAtual.tipo !== 'launcher'
-    );
     const urlAvatarPerfil = uuidAvatarMinecraft
       ? `https://mc-heads.net/head/${uuidAvatarMinecraft}/64`
       : perfil?.discordAvatar
@@ -1683,20 +1683,23 @@ export default function SocialSidebar({
         key={amigo.friendProfileId}
         type="button"
         onClick={() => abrirChatComAmigo(amigo.friendProfileId)}
-        title={`${amigo.nome} · ${rotuloStatus(amigo.status)}`}
+        title={`${amigo.nome} · ${rotuloStatus(statusEfetivo(amigo.status, amigo.online))}`}
         aria-label={`Abrir conversa com ${amigo.nome}`}
         aria-expanded={chatAberto && amigoSelecionadoPerfilId === amigo.friendProfileId}
-        className="relative grid h-9 w-9 place-items-center border border-white/[0.07] bg-white/[0.02] transition-colors hover:border-white/20 hover:bg-white/[0.05]"
+        className="relative grid h-10 w-10 place-items-center border border-white/[0.07] bg-white/[0.02] transition-colors hover:border-white/20 hover:bg-white/[0.05]"
       >
         {amigo.avatarUrl ? (
-          <img src={amigo.avatarUrl} alt="" className="h-7 w-7 object-contain" />
+          <img src={amigo.avatarUrl} alt="" className="h-8 w-8 object-contain" />
         ) : (
           <span className="text-[8px] font-black text-white/50">
             {amigo.nome.trim().slice(0, 2).toUpperCase()}
           </span>
         )}
         <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#101010]">
-          <IndicadorStatusSocial status={amigo.status ?? 'offline'} className="h-2.5 w-2.5" />
+          <IndicadorStatusSocial
+            status={statusEfetivo(amigo.status, amigo.online)}
+            className="h-2.5 w-2.5"
+          />
         </span>
       </button>
     );
@@ -1710,14 +1713,14 @@ export default function SocialSidebar({
             onClick={onAlternarRecuo}
             title="Abrir painel social"
             aria-label="Abrir painel social"
-            className="grid h-8 w-8 place-items-center border border-white/10 bg-white/[0.025] text-white/45 transition-colors hover:border-white/20 hover:text-white"
+            className="grid h-10 w-10 place-items-center border border-white/10 bg-white/[0.025] text-white/45 transition-colors hover:border-white/20 hover:text-white"
           >
             <ChevronLeft size={13} />
           </button>
 
           <div
             title={sessao ? nomeExibicaoAtual : 'Entrar no social'}
-            className="relative grid h-11 w-11 place-items-center border border-white/10 bg-[#151515]"
+            className="relative grid h-10 w-10 place-items-center border border-white/10 bg-[#151515]"
           >
             {urlAvatarPerfil ? (
               <img src={urlAvatarPerfil} alt="" className="h-8 w-8 object-cover" />
@@ -1731,12 +1734,12 @@ export default function SocialSidebar({
             )}
           </div>
 
-          {sessao && amigosJogando.length > 0 && (
+          {sessao && amigosOnline.length > 0 && (
             <div className="flex w-full flex-col items-center gap-2 border-t border-white/[0.07] pt-3">
-              <Gamepad2 size={12} className="text-[#45A366]" />
-              {amigosJogando.slice(0, 4).map(renderizarAvatarAmigo)}
-              {amigosJogando.length > 4 && (
-                <span className="text-[8px] font-black text-white/30">+{amigosJogando.length - 4}</span>
+              <IndicadorStatusSocial status="online" className="h-3 w-3" titulo="Online" />
+              {amigosOnline.slice(0, 4).map(renderizarAvatarAmigo)}
+              {amigosOnline.length > 4 && (
+                <span className="text-[8px] font-black text-white/30">+{amigosOnline.length - 4}</span>
               )}
             </div>
           )}

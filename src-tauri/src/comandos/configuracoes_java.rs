@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::launcher::LauncherState;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -135,9 +138,13 @@ pub async fn get_settings() -> Result<GlobalSettings, String> {
 }
 
 #[tauri::command]
-pub async fn save_settings(settings: GlobalSettings) -> Result<(), String> {
+pub async fn save_settings(
+    settings: GlobalSettings,
+    state: State<'_, LauncherState>,
+) -> Result<(), String> {
     validar_cor_destaque(&settings.cor_destaque)?;
     preparar_diretorio_instancias(&settings.instances_path)?;
+    let novo_caminho_instancias = std::path::PathBuf::from(settings.instances_path.trim());
 
     let path = get_settings_path();
     if let Some(parent) = path.parent() {
@@ -146,6 +153,7 @@ pub async fn save_settings(settings: GlobalSettings) -> Result<(), String> {
     let content = serde_json::to_string_pretty(&settings)
         .map_err(|e| format!("Erro ao serializar: {}", e))?;
     std::fs::write(&path, content).map_err(|e| format!("Erro ao salvar: {}", e))?;
+    state.atualizar_caminho_instancias(novo_caminho_instancias)?;
     Ok(())
 }
 

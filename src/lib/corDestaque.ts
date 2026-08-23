@@ -62,7 +62,6 @@ export function aplicarCorDestaque(valor: unknown): void {
     const preto = { r: 0, g: 0, b: 0 };
     const raiz = document.documentElement;
     const favoritos = misturarCores(base, converterHexParaRgb("#F6329A"), 0.5);
-    const grupos = misturarCores(base, converterHexParaRgb("#E600FF"), 0.5);
     const paleta: Record<number, Rgb> = {
         50: misturarCores(base, branco, 0.94),
         100: misturarCores(base, branco, 0.86),
@@ -82,6 +81,6 @@ export function aplicarCorDestaque(valor: unknown): void {
     raiz.style.setProperty("--cor-acento-rgb", `${base.r}, ${base.g}, ${base.b}`);
     raiz.style.setProperty("--cor-favoritos", converterRgbParaHex(favoritos));
     raiz.style.setProperty("--cor-favoritos-rgb", `${favoritos.r}, ${favoritos.g}, ${favoritos.b}`);
-    raiz.style.setProperty("--cor-grupos", converterRgbParaHex(grupos));
-    raiz.style.setProperty("--cor-grupos-rgb", `${grupos.r}, ${grupos.g}, ${grupos.b}`);
+    raiz.style.setProperty("--cor-grupos", cor);
+    raiz.style.setProperty("--cor-grupos-rgb", `${base.r}, ${base.g}, ${base.b}`);
 }

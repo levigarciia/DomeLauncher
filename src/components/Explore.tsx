@@ -10,7 +10,7 @@ import {
 } from "../iconesPixelados";
 import { motion } from "framer-motion";
 import { cn } from "../lib/utils";
-import { EsqueletoAba } from "./EsqueletoCarregamento";
+import { EsqueletoExplore } from "./EsqueletoCarregamento";
 import { addFavorite, removeFavorite, isFavorite, type FavoriteItem } from "./Favorites";
 import type { ProjetoConteudo, TipoProjetoConteudo } from "./ProjetoDetalheModal";
 import { invoke } from "@tauri-apps/api/core";
@@ -319,19 +319,19 @@ export default function Explore({
       </div>
 
       {loading ? (
-        <EsqueletoAba />
+        <EsqueletoExplore />
       ) : (
         <>
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
             className="grid grid-cols-1 gap-6 lg:grid-cols-2 2xl:grid-cols-3"
           >
           {results.map((item, index) => (
             <motion.div
               key={item.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               transition={{ delay: index * 0.03 }}
               className="group flex min-w-0 cursor-pointer flex-col gap-4 overflow-hidden rounded-3xl border border-white/5 bg-white/5 p-5 transition-all hover:border-white/20"
               onClick={() => abrirDetalheProjeto(item)}

@@ -23,6 +23,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import { EsqueletoAba } from "./EsqueletoCarregamento";
 import { ehCorHexValida, normalizarCorDestaque } from "../lib/corDestaque";
+import { EVENTO_INSTANCIAS_ATUALIZADAS } from "../lib/eventosTransferenciaSocial";
 
 // Tipos
 interface GlobalSettings {
@@ -109,11 +110,10 @@ export default function Settings() {
   const [javaAberto, setJavaAberto] = useState(true);
   const [codigoCor, setCodigoCor] = useState("#10B981");
   const [selecionandoPasta, setSelecionandoPasta] = useState(false);
-  const [reiniciando, setReiniciando] = useState(false);
   const ignorarPrimeiraPersistencia = useRef(true);
   const configuracoesAtuais = useRef(settings);
   const alteracoesPendentes = useRef(false);
-  const caminhoInstanciasInicial = useRef("");
+  const caminhoInstanciasPersistido = useRef("");
 
   // Carregar configurações e dados
   useEffect(() => {
@@ -131,7 +131,7 @@ export default function Settings() {
         ...cfg,
         cor_destaque: normalizarCorDestaque(cfg?.cor_destaque),
       };
-      caminhoInstanciasInicial.current = configuracoesCarregadas.instances_path;
+      caminhoInstanciasPersistido.current = configuracoesCarregadas.instances_path;
       configuracoesAtuais.current = configuracoesCarregadas;
       setSettings(configuracoesCarregadas);
       setCodigoCor(configuracoesCarregadas.cor_destaque);
@@ -188,6 +188,10 @@ export default function Settings() {
   ) => {
     try {
       await invoke("save_settings", { settings: configuracoes });
+      if (configuracoes.instances_path !== caminhoInstanciasPersistido.current) {
+        caminhoInstanciasPersistido.current = configuracoes.instances_path;
+        window.dispatchEvent(new CustomEvent(EVENTO_INSTANCIAS_ATUALIZADAS));
+      }
       if (configuracoesAtuais.current === configuracoes) {
         alteracoesPendentes.current = false;
       }
@@ -229,7 +233,6 @@ export default function Settings() {
   const resolucaoAtual = RESOLUTIONS.find(
     (r) => r.w === settings.width && r.h === settings.height
   );
-  const reinicioNecessario = settings.instances_path !== caminhoInstanciasInicial.current;
   const codigoCorValido = ehCorHexValida(codigoCor);
 
   const selecionarPastaInstancias = async () => {
@@ -257,16 +260,6 @@ export default function Settings() {
     if (ehCorHexValida(codigo)) {
       atualizarConfig("cor_destaque", codigo);
     }
-  };
-
-  const reiniciarParaAplicarPasta = async () => {
-    setReiniciando(true);
-    const salvou = await persistirConfiguracoes(configuracoesAtuais.current, true);
-    if (salvou) {
-      await invoke("reiniciar_aplicativo");
-      return;
-    }
-    setReiniciando(false);
   };
 
   if (carregando) {
@@ -735,22 +728,6 @@ export default function Settings() {
               Escolher pasta
             </button>
           </div>
-          {reinicioNecessario && (
-            <div className="flex items-center justify-between gap-4 border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2.5">
-              <p className="text-[11px] leading-relaxed text-amber-100/65">
-                Reinicie o launcher para detectar as instâncias no novo local.
-              </p>
-              <button
-                type="button"
-                onClick={reiniciarParaAplicarPasta}
-                disabled={reiniciando}
-                className="flex shrink-0 items-center gap-2 bg-amber-300 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-[#171208] transition-colors hover:bg-amber-200 disabled:cursor-wait disabled:opacity-60"
-              >
-                {reiniciando ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                Reiniciar agora
-              </button>
-            </div>
-          )}
         </div>
 
         <ToggleItem
