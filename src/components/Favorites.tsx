@@ -8,11 +8,18 @@ import {
   ExternalLink,
   Search,
   Filter,
+  Copy,
 } from "../iconesPixelados";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "../lib/utils";
 import type { ProjetoConteudo } from "./ProjetoDetalheModal";
 import { obterImagemProjeto } from "../lib/imagemProjeto";
+import {
+  CabecalhoMenuContextual,
+  ItemMenuContextual,
+  MenuContextual,
+  SeparadorMenuContextual,
+} from "./context-menu/MenuContextual";
 
 export interface FavoriteItem {
   id: string;
@@ -92,6 +99,11 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
   const [busca, setBusca] = useState("");
   const [filtroTipo, setFiltroTipo] = useState<FiltroTipo>("todos");
   const [filtroFonte, setFiltroFonte] = useState<FiltroFonte>("todos");
+  const [menuContexto, setMenuContexto] = useState<{
+    item: FavoriteItem;
+    x: number;
+    y: number;
+  } | null>(null);
 
   useEffect(() => {
     setFavorites(loadFavorites());
@@ -132,8 +144,7 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
     setFavorites(loadFavorites());
   };
 
-  const openProject = (item: FavoriteItem) => {
-    const url =
+  const obterUrlProjeto = (item: FavoriteItem) =>
       item.source === "modrinth"
         ? `https://modrinth.com/${item.type}/${item.slug}`
         : item.type === "modpack"
@@ -143,7 +154,9 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
             : item.type === "shader"
               ? `https://www.curseforge.com/minecraft/shaders/${item.slug}`
               : `https://www.curseforge.com/minecraft/mc-mods/${item.slug}`;
-    window.open(url, "_blank");
+
+  const openProject = (item: FavoriteItem) => {
+    window.open(obterUrlProjeto(item), "_blank");
   };
 
   const abrirDetalhes = (item: FavoriteItem) => {
@@ -297,6 +310,11 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.95 }}
                   onClick={() => abrirDetalhes(item)}
+                  onContextMenu={(evento) => {
+                    evento.preventDefault();
+                    evento.stopPropagation();
+                    setMenuContexto({ item, x: evento.clientX, y: evento.clientY });
+                  }}
                   className="bg-white/3 border border-white/5 rounded-2xl p-4 group hover:border-white/10 transition-all cursor-pointer"
                 >
                   <div className="flex gap-4">
@@ -358,6 +376,48 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
           </div>
         </AnimatePresence>
       )}
+
+      <MenuContextual
+        aberto={menuContexto !== null}
+        x={menuContexto?.x ?? 0}
+        y={menuContexto?.y ?? 0}
+        onFechar={() => setMenuContexto(null)}
+        rotulo="Ações do favorito"
+      >
+        {menuContexto && (
+          <>
+            <CabecalhoMenuContextual
+              titulo={menuContexto.item.title}
+              subtitulo={`${TYPE_LABELS[menuContexto.item.type]} · ${menuContexto.item.source}`}
+            />
+            <ItemMenuContextual icone={<Package size={13} />} onClick={() => {
+              abrirDetalhes(menuContexto.item);
+              setMenuContexto(null);
+            }}>
+              Ver detalhes
+            </ItemMenuContextual>
+            <ItemMenuContextual icone={<ExternalLink size={13} />} onClick={() => {
+              openProject(menuContexto.item);
+              setMenuContexto(null);
+            }}>
+              Abrir página do projeto
+            </ItemMenuContextual>
+            <ItemMenuContextual icone={<Copy size={13} />} onClick={() => {
+              void navigator.clipboard.writeText(obterUrlProjeto(menuContexto.item));
+              setMenuContexto(null);
+            }}>
+              Copiar link
+            </ItemMenuContextual>
+            <SeparadorMenuContextual />
+            <ItemMenuContextual icone={<Trash2 size={13} />} perigo onClick={() => {
+              handleRemove(menuContexto.item.id);
+              setMenuContexto(null);
+            }}>
+              Remover dos favoritos
+            </ItemMenuContextual>
+          </>
+        )}
+      </MenuContextual>
     </div>
   );
 }

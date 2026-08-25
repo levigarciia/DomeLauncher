@@ -20,12 +20,21 @@ import {
   Upload,
   Download,
   Loader2,
+  Check,
+  RefreshCw,
 } from "../iconesPixelados";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Instance } from "../hooks/useLauncher";
 import { cn } from "../lib/utils";
+import {
+  CabecalhoMenuContextual,
+  ItemMenuContextual,
+  MenuContextual,
+  RotuloMenuContextual,
+  SeparadorMenuContextual,
+} from "./context-menu/MenuContextual";
 import {
   finalizarImportacoes,
   iniciarImportacoes,
@@ -73,11 +82,21 @@ interface ResultadoImportacaoInstancia {
   mensagem: string;
 }
 
-interface MenuContextoInstancia {
+type MenuContextoBiblioteca = {
+  tipo: "instancia";
   instancia: Instance;
   x: number;
   y: number;
-}
+} | {
+  tipo: "grupo";
+  grupo: InstanceGroup;
+  x: number;
+  y: number;
+} | {
+  tipo: "vazio";
+  x: number;
+  y: number;
+};
 
 function deduplicarIds(ids: string[]): string[] {
   return Array.from(new Set(ids));
@@ -187,7 +206,10 @@ export default function LibraryPage({
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
   const [grupoArrastadoId, setGrupoArrastadoId] = useState<string | null>(null);
   const [menuAberto, setMenuAberto] = useState<string | null>(null);
-  const [menuContexto, setMenuContexto] = useState<MenuContextoInstancia | null>(null);
+  const [menuContexto, setMenuContexto] = useState<MenuContextoBiblioteca | null>(null);
+  const [modoSelecaoMultipla, setModoSelecaoMultipla] = useState(false);
+  const [idsSelecionados, setIdsSelecionados] = useState<Set<string>>(new Set());
+  const [menuMoverSelecionadasAberto, setMenuMoverSelecionadasAberto] = useState(false);
   const [grupoExclusao, setGrupoExclusao] = useState<InstanceGroup | null>(null);
   const [modalEscolhaImportacaoAberto, setModalEscolhaImportacaoAberto] = useState(false);
   const [modalImportacaoAberto, setModalImportacaoAberto] = useState(false);
@@ -744,22 +766,76 @@ export default function LibraryPage({
   };
 
   const selecionarInstancia = (instancia: Instance) => {
+    if (modoSelecaoMultipla) {
+      setIdsSelecionados((anteriores) => {
+        const proximos = new Set(anteriores);
+        if (proximos.has(instancia.id)) proximos.delete(instancia.id);
+        else proximos.add(instancia.id);
+        return proximos;
+      });
+      return;
+    }
     setInstanciaSelecionadaId(instancia.id);
     onSelectInstance(instancia);
+  };
+
+  const iniciarSelecaoMultipla = (idsIniciais: string[] = []) => {
+    setModoSelecaoMultipla(true);
+    setIdsSelecionados(new Set(idsIniciais));
+    setMenuContexto(null);
+  };
+
+  const encerrarSelecaoMultipla = () => {
+    setModoSelecaoMultipla(false);
+    setIdsSelecionados(new Set());
+    setMenuMoverSelecionadasAberto(false);
+  };
+
+  const moverSelecionadasParaGrupo = (grupoId: string) => {
+    idsSelecionados.forEach((id) => moverInstanciaParaGrupo(id, grupoId));
+    encerrarSelecaoMultipla();
+  };
+
+  const exportarSelecionadas = async () => {
+    for (const id of idsSelecionados) {
+      await exportarInstancia(id);
+    }
+    encerrarSelecaoMultipla();
+  };
+
+  const excluirSelecionadas = () => {
+    if (idsSelecionados.size === 0) return;
+    if (!confirm(`Excluir ${idsSelecionados.size} instâncias selecionadas?`)) return;
+    idsSelecionados.forEach((id) => onDelete(id));
+    encerrarSelecaoMultipla();
   };
 
   const abrirMenuContexto = (evento: React.MouseEvent, instancia: Instance) => {
     evento.preventDefault();
     evento.stopPropagation();
-    selecionarInstancia(instancia);
-
-    const larguraMenu = 248;
-    const alturaMenu = Math.min(430, 250 + state.groups.length * 34);
+    if (!modoSelecaoMultipla) {
+      setInstanciaSelecionadaId(instancia.id);
+      onSelectInstance(instancia);
+    }
     setMenuContexto({
+      tipo: "instancia",
       instancia,
-      x: Math.max(8, Math.min(evento.clientX, window.innerWidth - larguraMenu - 8)),
-      y: Math.max(8, Math.min(evento.clientY, window.innerHeight - alturaMenu - 8)),
+      x: evento.clientX,
+      y: evento.clientY,
     });
+  };
+
+  const abrirMenuContextoGrupo = (evento: React.MouseEvent, grupo: InstanceGroup) => {
+    evento.preventDefault();
+    evento.stopPropagation();
+    setMenuContexto({ tipo: "grupo", grupo, x: evento.clientX, y: evento.clientY });
+  };
+
+  const abrirMenuContextoVazio = (evento: React.MouseEvent) => {
+    const alvo = evento.target as HTMLElement;
+    if (alvo.closest("button, input, [data-contexto-biblioteca-item]")) return;
+    evento.preventDefault();
+    setMenuContexto({ tipo: "vazio", x: evento.clientX, y: evento.clientY });
   };
 
   const jogarPeloMenu = (instancia: Instance) => {
@@ -970,7 +1046,10 @@ export default function LibraryPage({
 
       {/* Grupos e instâncias */}
       {instances.length === 0 && instanciasEmImportacao.length === 0 ? (
-        <div className="py-20 flex flex-col items-center justify-center text-white/20 border-2 border-dashed border-white/5 rounded-2xl">
+        <div
+          className="py-20 flex flex-col items-center justify-center text-white/20 border-2 border-dashed border-white/5 rounded-2xl"
+          onContextMenu={abrirMenuContextoVazio}
+        >
           <Box size={48} className="mb-4 opacity-20" />
           <p className="font-bold">Nenhuma instância encontrada</p>
           <p className="text-sm mt-1">
@@ -995,7 +1074,7 @@ export default function LibraryPage({
           </div>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="min-h-48 space-y-2" onContextMenu={abrirMenuContextoVazio}>
           {instanciasEmImportacao.length > 0 && (
             <SecaoImportacoesEmAndamento
               instancias={instanciasEmImportacao}
@@ -1034,6 +1113,9 @@ export default function LibraryPage({
                 onSelect={selecionarInstancia}
                 onAbrirGerenciador={onAbrirGerenciadorInstancia}
                 onAbrirMenuContexto={abrirMenuContexto}
+                onAbrirMenuContextoGrupo={(evento) => abrirMenuContextoGrupo(evento, grupo)}
+                modoSelecaoMultipla={modoSelecaoMultipla}
+                idsSelecionados={idsSelecionados}
                 onIniciarArrasto={iniciarArrastoManual}
                 onEntrarInstanciaDuranteArrasto={(instanceId) =>
                   moverInstanciaDuranteArrasto(instanceId, grupo.id)
@@ -1060,6 +1142,88 @@ export default function LibraryPage({
           })}
         </div>
       )}
+
+      <AnimatePresence>
+        {modoSelecaoMultipla && (
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            className="sticky bottom-4 z-40 mx-auto flex w-fit max-w-full items-center gap-2 border border-emerald-400/20 bg-[#151516] p-2 shadow-2xl"
+          >
+            <span className="border-r border-white/10 px-2 text-xs font-bold text-white/70">
+              {idsSelecionados.size} selecionada{idsSelecionados.size === 1 ? "" : "s"}
+            </span>
+            <button
+              type="button"
+              onClick={() => setIdsSelecionados(new Set(instances.map((instancia) => instancia.id)))}
+              className="px-2 py-1.5 text-[10px] font-bold text-white/45 hover:text-white"
+            >
+              Selecionar todas
+            </button>
+            <div className="relative">
+              <button
+                type="button"
+                disabled={idsSelecionados.size === 0}
+                onClick={() => setMenuMoverSelecionadasAberto((aberto) => !aberto)}
+                className="flex items-center gap-1.5 border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[10px] font-bold text-white/65 hover:text-white disabled:opacity-35"
+              >
+                <FolderOpen size={12} />
+                Mover para
+                <ChevronDown size={11} />
+              </button>
+              <AnimatePresence>
+                {menuMoverSelecionadasAberto && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 4 }}
+                    className="absolute bottom-full left-0 mb-1 min-w-44 border border-white/12 bg-[#171719] p-1 shadow-xl"
+                  >
+                    {state.groups.map((grupo) => (
+                      <button
+                        type="button"
+                        key={grupo.id}
+                        onClick={() => moverSelecionadasParaGrupo(grupo.id)}
+                        className="flex w-full items-center gap-2 px-2.5 py-2 text-left text-[10px] font-bold text-white/60 hover:bg-white/7 hover:text-white"
+                      >
+                        <FolderOpen size={11} />
+                        <span className="truncate">{grupo.name}</span>
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+            <button
+              type="button"
+              disabled={idsSelecionados.size === 0 || Boolean(exportandoId)}
+              onClick={() => void exportarSelecionadas()}
+              className="flex items-center gap-1.5 border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[10px] font-bold text-white/65 hover:text-white disabled:opacity-35"
+            >
+              <Download size={12} />
+              Exportar
+            </button>
+            <button
+              type="button"
+              disabled={idsSelecionados.size === 0}
+              onClick={excluirSelecionadas}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 text-[10px] font-bold text-red-300/70 hover:bg-red-500/10 hover:text-red-200 disabled:opacity-35"
+            >
+              <Trash2 size={12} />
+              Excluir
+            </button>
+            <button
+              type="button"
+              onClick={encerrarSelecaoMultipla}
+              className="p-1.5 text-white/35 hover:text-white"
+              aria-label="Cancelar seleção múltipla"
+            >
+              <X size={13} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {grupoExclusao && (
@@ -1117,44 +1281,189 @@ export default function LibraryPage({
         )}
 
         {menuContexto && (
-          <>
-            <motion.button
-              aria-label="Fechar menu da instância"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[79] cursor-default"
-              onClick={() => setMenuContexto(null)}
-            />
-            <MenuGerenciamentoInstancia
-              menu={menuContexto}
-              grupos={state.groups}
-              exportando={exportandoId === menuContexto.instancia.id}
-              onJogar={() => jogarPeloMenu(menuContexto.instancia)}
-              onGerenciar={() => {
-                setMenuContexto(null);
-                onAbrirGerenciadorInstancia(menuContexto.instancia);
-              }}
-              onAbrirLocal={() => {
-                const instanceId = menuContexto.instancia.id;
-                setMenuContexto(null);
-                void invoke("abrir_pasta_instancia", { instanceId }).catch((erro) => {
-                  console.error("Erro ao abrir local da instância:", erro);
-                  alert("Não foi possível abrir o local da instância.");
-                });
-              }}
-              onExportar={() => {
-                const id = menuContexto.instancia.id;
-                setMenuContexto(null);
-                void exportarInstancia(id);
-              }}
-              onMover={(grupoId) => {
-                moverInstanciaParaGrupo(menuContexto.instancia.id, grupoId);
-                setMenuContexto(null);
-              }}
-              onExcluir={() => excluirPeloMenu(menuContexto.instancia)}
-            />
-          </>
+          <MenuContextual
+            aberto
+            x={menuContexto.x}
+            y={menuContexto.y}
+            onFechar={() => setMenuContexto(null)}
+          >
+            {menuContexto.tipo === "instancia" && (() => {
+              const instancia = menuContexto.instancia;
+              const grupoAtual = state.groups.find((grupo) => grupo.instanceIds.includes(instancia.id));
+              const estaSelecionada = idsSelecionados.has(instancia.id);
+              return (
+                <>
+                  <CabecalhoMenuContextual
+                    titulo={instancia.name}
+                    subtitulo={`${instancia.loader_type || instancia.mc_type} ${instancia.version}`}
+                  />
+                  <ItemMenuContextual
+                    icone={<Play size={13} fill="currentColor" />}
+                    destaque
+                    onClick={() => jogarPeloMenu(instancia)}
+                  >
+                    Jogar
+                  </ItemMenuContextual>
+                  <ItemMenuContextual icone={<Pencil size={13} />} onClick={() => {
+                    setMenuContexto(null);
+                    onAbrirGerenciadorInstancia(instancia);
+                  }}>
+                    Gerenciar instância
+                  </ItemMenuContextual>
+                  <ItemMenuContextual icone={<Check size={13} />} onClick={() => {
+                    const selecionadas = Array.from(idsSelecionados);
+                    iniciarSelecaoMultipla(
+                      estaSelecionada
+                        ? selecionadas.filter((id) => id !== instancia.id)
+                        : [...selecionadas, instancia.id]
+                    );
+                  }}>
+                    {estaSelecionada ? "Remover da seleção" : "Selecionar"}
+                  </ItemMenuContextual>
+                  <ItemMenuContextual icone={<FolderOpen size={13} />} onClick={() => {
+                    setMenuContexto(null);
+                    void invoke("abrir_pasta_instancia", { instanceId: instancia.id }).catch((erro) => {
+                      console.error("Erro ao abrir local da instância:", erro);
+                      alert("Não foi possível abrir o local da instância.");
+                    });
+                  }}>
+                    Abrir pasta
+                  </ItemMenuContextual>
+                  <ItemMenuContextual
+                    icone={exportandoId === instancia.id
+                      ? <Loader2 size={13} className="animate-spin" />
+                      : <Download size={13} />}
+                    disabled={exportandoId === instancia.id}
+                    onClick={() => {
+                      setMenuContexto(null);
+                      void exportarInstancia(instancia.id);
+                    }}
+                  >
+                    Exportar
+                  </ItemMenuContextual>
+                  {state.groups.length > 1 && (
+                    <>
+                      <RotuloMenuContextual>Mover para grupo</RotuloMenuContextual>
+                      {state.groups.map((grupo) => (
+                        <ItemMenuContextual
+                          key={grupo.id}
+                          icone={<FolderOpen size={12} />}
+                          disabled={grupo.id === grupoAtual?.id}
+                          sufixo={grupo.id === grupoAtual?.id ? "Atual" : undefined}
+                          onClick={() => {
+                            moverInstanciaParaGrupo(instancia.id, grupo.id);
+                            setMenuContexto(null);
+                          }}
+                        >
+                          {grupo.name}
+                        </ItemMenuContextual>
+                      ))}
+                    </>
+                  )}
+                  <SeparadorMenuContextual />
+                  <ItemMenuContextual
+                    icone={<Trash2 size={13} />}
+                    perigo
+                    onClick={() => excluirPeloMenu(instancia)}
+                  >
+                    Excluir instância
+                  </ItemMenuContextual>
+                </>
+              );
+            })()}
+
+            {menuContexto.tipo === "grupo" && (
+              <>
+                <CabecalhoMenuContextual
+                  titulo={menuContexto.grupo.name}
+                  subtitulo={`${menuContexto.grupo.instanceIds.length} instâncias`}
+                />
+                <ItemMenuContextual icone={<Pencil size={13} />} onClick={() => {
+                  setEditandoGrupo(menuContexto.grupo.id);
+                  setNomeGrupo(menuContexto.grupo.name);
+                  setMenuContexto(null);
+                  setTimeout(() => inputRef.current?.select(), 50);
+                }}>
+                  Renomear grupo
+                </ItemMenuContextual>
+                <ItemMenuContextual
+                  icone={<Check size={13} />}
+                  disabled={menuContexto.grupo.instanceIds.length === 0}
+                  onClick={() => iniciarSelecaoMultipla(menuContexto.grupo.instanceIds)}
+                >
+                  Selecionar instâncias
+                </ItemMenuContextual>
+                <ItemMenuContextual
+                  icone={menuContexto.grupo.collapsed
+                    ? <ChevronRight size={13} />
+                    : <ChevronDown size={13} />}
+                  onClick={() => {
+                    toggleGrupo(menuContexto.grupo.id);
+                    setMenuContexto(null);
+                  }}
+                >
+                  {menuContexto.grupo.collapsed ? "Expandir grupo" : "Recolher grupo"}
+                </ItemMenuContextual>
+                {state.groups.length > 1 && (
+                  <>
+                    <SeparadorMenuContextual />
+                    <ItemMenuContextual icone={<Trash2 size={13} />} perigo onClick={() => {
+                      setGrupoExclusao(menuContexto.grupo);
+                      setMenuContexto(null);
+                    }}>
+                      Excluir grupo
+                    </ItemMenuContextual>
+                  </>
+                )}
+              </>
+            )}
+
+            {menuContexto.tipo === "vazio" && (
+              <>
+                <CabecalhoMenuContextual titulo="Biblioteca" subtitulo="Ações rápidas" />
+                <ItemMenuContextual icone={<Plus size={13} />} onClick={() => {
+                  setMenuContexto(null);
+                  onCreateNew();
+                }}>
+                  Criar instância
+                </ItemMenuContextual>
+                <ItemMenuContextual icone={<Upload size={13} />} onClick={() => {
+                  setMenuContexto(null);
+                  setModalEscolhaImportacaoAberto(true);
+                }}>
+                  Importar instância
+                </ItemMenuContextual>
+                <ItemMenuContextual icone={<FolderPlus size={13} />} onClick={() => {
+                  setMenuContexto(null);
+                  criarGrupo();
+                }}>
+                  Criar grupo
+                </ItemMenuContextual>
+                <ItemMenuContextual icone={<Check size={13} />} onClick={() => iniciarSelecaoMultipla()}>
+                  Selecionar várias
+                </ItemMenuContextual>
+                <SeparadorMenuContextual />
+                <ItemMenuContextual icone={<RefreshCw size={13} />} onClick={() => {
+                  setMenuContexto(null);
+                  void onAtualizarInstancias();
+                }}>
+                  Atualizar biblioteca
+                </ItemMenuContextual>
+                <ItemMenuContextual
+                  icone={state.viewMode === "grid" ? <List size={13} /> : <LayoutGrid size={13} />}
+                  onClick={() => {
+                    setState((estado) => ({
+                      ...estado,
+                      viewMode: estado.viewMode === "grid" ? "list" : "grid",
+                    }));
+                    setMenuContexto(null);
+                  }}
+                >
+                  Exibir como {state.viewMode === "grid" ? "lista" : "grade"}
+                </ItemMenuContextual>
+              </>
+            )}
+          </MenuContextual>
         )}
       </AnimatePresence>
 
@@ -1493,130 +1802,6 @@ function SecaoImportacoesEmAndamento({
   );
 }
 
-function MenuGerenciamentoInstancia({
-  menu,
-  grupos,
-  exportando,
-  onJogar,
-  onGerenciar,
-  onAbrirLocal,
-  onExportar,
-  onMover,
-  onExcluir,
-}: {
-  menu: MenuContextoInstancia;
-  grupos: InstanceGroup[];
-  exportando: boolean;
-  onJogar: () => void;
-  onGerenciar: () => void;
-  onAbrirLocal: () => void;
-  onExportar: () => void;
-  onMover: (grupoId: string) => void;
-  onExcluir: () => void;
-}) {
-  const grupoAtual = grupos.find((grupo) =>
-    grupo.instanceIds.includes(menu.instancia.id)
-  );
-  const classeItem =
-    "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-xs font-semibold transition-colors";
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.96, y: -4 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96, y: -4 }}
-      transition={{ duration: 0.1 }}
-      className="fixed z-[80] w-[240px] rounded-xl border border-white/15 bg-[#171719] p-1.5 shadow-2xl"
-      style={{ left: menu.x, top: menu.y }}
-      onMouseDown={(evento) => evento.stopPropagation()}
-      onContextMenu={(evento) => evento.preventDefault()}
-    >
-      <div className="border-b border-white/8 px-3 pb-2 pt-1.5">
-        <p className="truncate text-xs font-black text-white">{menu.instancia.name}</p>
-        <p className="mt-0.5 truncate text-[10px] text-white/35">
-          {menu.instancia.loader_type || menu.instancia.mc_type} {menu.instancia.version}
-        </p>
-      </div>
-
-      <div className="space-y-0.5 py-1">
-        <button
-          onClick={onJogar}
-          className={cn(classeItem, "text-emerald-300 hover:bg-emerald-500/10")}
-        >
-          <Play size={13} fill="currentColor" />
-          Jogar
-        </button>
-        <button
-          onClick={onGerenciar}
-          className={cn(classeItem, "text-white/75 hover:bg-white/7 hover:text-white")}
-        >
-          <Pencil size={13} />
-          Gerenciar instância
-        </button>
-        <button
-          onClick={onAbrirLocal}
-          className={cn(classeItem, "text-white/75 hover:bg-white/7 hover:text-white")}
-        >
-          <FolderOpen size={13} />
-          Abrir local do arquivo
-        </button>
-        <button
-          onClick={onExportar}
-          disabled={exportando}
-          className={cn(
-            classeItem,
-            "text-white/75 hover:bg-white/7 hover:text-white disabled:opacity-40"
-          )}
-        >
-          {exportando ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-          Exportar
-        </button>
-      </div>
-
-      {grupos.length > 1 && (
-        <div className="border-t border-white/8 px-1 pb-1 pt-2">
-          <p className="px-2 pb-1 text-[9px] font-black uppercase tracking-[0.16em] text-white/25">
-            Mover para grupo
-          </p>
-          {grupos.map((grupo) => {
-            const atual = grupo.id === grupoAtual?.id;
-            return (
-              <button
-                key={grupo.id}
-                onClick={() => onMover(grupo.id)}
-                disabled={atual}
-                className={cn(
-                  classeItem,
-                  atual
-                    ? "cursor-default text-emerald-300/60"
-                    : "text-white/60 hover:bg-white/7 hover:text-white"
-                )}
-              >
-                <FolderOpen size={12} />
-                <span className="truncate">{grupo.name}</span>
-                {atual && <span className="ml-auto text-[9px] uppercase">Atual</span>}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="border-t border-white/8 pt-1">
-        <button
-          onClick={onExcluir}
-          className={cn(
-            classeItem,
-            "text-red-300/80 hover:bg-red-500/10 hover:text-red-200"
-          )}
-        >
-          <Trash2 size={13} />
-          Excluir instância
-        </button>
-      </div>
-    </motion.div>
-  );
-}
-
 // ===== WIDGET DE GRUPO =====
 function GrupoWidget({
   grupo,
@@ -1635,6 +1820,9 @@ function GrupoWidget({
   onSelect,
   onAbrirGerenciador,
   onAbrirMenuContexto,
+  onAbrirMenuContextoGrupo,
+  modoSelecaoMultipla,
+  idsSelecionados,
   onIniciarArrasto,
   onEntrarInstanciaDuranteArrasto,
   onMouseEnterGrupo,
@@ -1663,6 +1851,9 @@ function GrupoWidget({
   onSelect: (instance: Instance) => void;
   onAbrirGerenciador: (instance: Instance) => void;
   onAbrirMenuContexto: (evento: React.MouseEvent, instance: Instance) => void;
+  onAbrirMenuContextoGrupo: (evento: React.MouseEvent) => void;
+  modoSelecaoMultipla: boolean;
+  idsSelecionados: Set<string>;
   onIniciarArrasto: (id: string) => void;
   onEntrarInstanciaDuranteArrasto: (id: string) => void;
   onMouseEnterGrupo: () => void;
@@ -1684,6 +1875,7 @@ function GrupoWidget({
         onEntrarGrupoDestino();
       }}
       onMouseUp={onMouseUpGrupo}
+      data-contexto-biblioteca-item
       className={`rounded-xl border transition-all ${
         dragOver
           ? "border-emerald-500/30 bg-emerald-500/5"
@@ -1691,7 +1883,10 @@ function GrupoWidget({
       } ${grupoSendoArrastado ? "opacity-45" : "opacity-100"}`}
     >
       {/* Header do grupo */}
-      <div className="flex items-center gap-2 py-1.5 px-1 group/header">
+      <div
+        className="flex items-center gap-2 py-1.5 px-1 group/header"
+        onContextMenu={onAbrirMenuContextoGrupo}
+      >
         <div
           onMouseDown={onIniciarArrastoGrupo}
           className={cn(
@@ -1801,7 +1996,12 @@ function GrupoWidget({
                     onIniciarArrasto={onIniciarArrasto}
                     onEntrarDuranteArrasto={onEntrarInstanciaDuranteArrasto}
                     onFinalizarArrasto={onFinalizarArrasto}
-                    selecionada={instance.id === instanciaSelecionadaId}
+                    selecionada={
+                      modoSelecaoMultipla
+                        ? idsSelecionados.has(instance.id)
+                        : instance.id === instanciaSelecionadaId
+                    }
+                    modoSelecaoMultipla={modoSelecaoMultipla}
                     ativa={instance.id === instanciaAtivaId}
                     agoraSegundos={agoraSegundos}
                   />
@@ -1820,7 +2020,12 @@ function GrupoWidget({
                     onIniciarArrasto={onIniciarArrasto}
                     onEntrarDuranteArrasto={onEntrarInstanciaDuranteArrasto}
                     onFinalizarArrasto={onFinalizarArrasto}
-                    selecionada={instance.id === instanciaSelecionadaId}
+                    selecionada={
+                      modoSelecaoMultipla
+                        ? idsSelecionados.has(instance.id)
+                        : instance.id === instanciaSelecionadaId
+                    }
+                    modoSelecaoMultipla={modoSelecaoMultipla}
                     ativa={instance.id === instanciaAtivaId}
                     agoraSegundos={agoraSegundos}
                   />
@@ -1845,6 +2050,7 @@ function CardGrid({
   onEntrarDuranteArrasto,
   onFinalizarArrasto,
   selecionada,
+  modoSelecaoMultipla,
   ativa,
   agoraSegundos,
 }: {
@@ -1857,6 +2063,7 @@ function CardGrid({
   onEntrarDuranteArrasto: (id: string) => void;
   onFinalizarArrasto: () => void;
   selecionada: boolean;
+  modoSelecaoMultipla: boolean;
   ativa: boolean;
   agoraSegundos: number;
 }) {
@@ -1877,9 +2084,12 @@ function CardGrid({
       animate={{ opacity: 1, scale: 1 }}
       transition={{ delay: index * 0.02 }}
       onClick={() => onSelect(instance)}
-      onDoubleClick={() => onAbrirGerenciador(instance)}
+      onDoubleClick={() => {
+        if (!modoSelecaoMultipla) onAbrirGerenciador(instance);
+      }}
       onContextMenu={(evento) => onAbrirMenuContexto(evento, instance)}
       onMouseEnter={() => onEntrarDuranteArrasto(instance.id)}
+      data-contexto-biblioteca-item
       className={cn(
         "group relative rounded-xl p-3 cursor-pointer transition-all flex flex-col items-center text-center border",
         selecionada
@@ -1887,6 +2097,18 @@ function CardGrid({
           : "bg-white/3 hover:bg-white/5 border-white/5 hover:border-white/10"
       )}
     >
+      {modoSelecaoMultipla && (
+        <span
+          className={cn(
+            "absolute right-2 top-2 grid h-5 w-5 place-items-center border",
+            selecionada
+              ? "border-emerald-300 bg-emerald-400 text-[#07120d]"
+              : "border-white/20 bg-[#151516] text-transparent"
+          )}
+        >
+          <Check size={12} />
+        </span>
+      )}
       {/* Grip para drag */}
       <div
         onMouseDown={(evento) => {
@@ -1944,6 +2166,7 @@ function CardList({
   onEntrarDuranteArrasto,
   onFinalizarArrasto,
   selecionada,
+  modoSelecaoMultipla,
   ativa,
   agoraSegundos,
 }: {
@@ -1956,6 +2179,7 @@ function CardList({
   onEntrarDuranteArrasto: (id: string) => void;
   onFinalizarArrasto: () => void;
   selecionada: boolean;
+  modoSelecaoMultipla: boolean;
   ativa: boolean;
   agoraSegundos: number;
 }) {
@@ -1976,9 +2200,12 @@ function CardList({
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay: index * 0.02 }}
       onClick={() => onSelect(instance)}
-      onDoubleClick={() => onAbrirGerenciador(instance)}
+      onDoubleClick={() => {
+        if (!modoSelecaoMultipla) onAbrirGerenciador(instance);
+      }}
       onContextMenu={(evento) => onAbrirMenuContexto(evento, instance)}
       onMouseEnter={() => onEntrarDuranteArrasto(instance.id)}
+      data-contexto-biblioteca-item
       className={cn(
         "group flex items-center gap-3 rounded-xl px-3 py-2 cursor-pointer transition-all border",
         selecionada
@@ -1986,6 +2213,18 @@ function CardList({
           : "bg-white/2 hover:bg-white/4 border-white/3 hover:border-white/8"
       )}
     >
+      {modoSelecaoMultipla && (
+        <span
+          className={cn(
+            "grid h-5 w-5 shrink-0 place-items-center border",
+            selecionada
+              ? "border-emerald-300 bg-emerald-400 text-[#07120d]"
+              : "border-white/20 bg-[#151516] text-transparent"
+          )}
+        >
+          <Check size={12} />
+        </span>
+      )}
       {/* Grip */}
       <div
         onMouseDown={(evento) => {

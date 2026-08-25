@@ -294,17 +294,6 @@ export default function App() {
   }, [atualizarSessaoMinecraft]);
 
   useEffect(() => {
-    const impedirMenuContextoNativo = (evento: MouseEvent) => {
-      evento.preventDefault();
-    };
-
-    document.addEventListener("contextmenu", impedirMenuContextoNativo);
-    return () => {
-      document.removeEventListener("contextmenu", impedirMenuContextoNativo);
-    };
-  }, []);
-
-  useEffect(() => {
     const carregarCorDestaque = async () => {
       try {
         const configuracoes = await invoke<{ cor_destaque?: string }>("get_settings");

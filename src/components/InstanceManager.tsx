@@ -34,6 +34,12 @@ import {
 } from "../lib/iconeInstancia";
 import Configuracao from "../pages/instance/Configuracao";
 import type { ProjetoConteudo } from "./ProjetoDetalheModal";
+import {
+  CabecalhoMenuContextual,
+  ItemMenuContextual,
+  MenuContextual,
+  SeparadorMenuContextual,
+} from "./context-menu/MenuContextual";
 
 interface InstanceManagerProps {
   instanceId: string;
@@ -77,6 +83,21 @@ interface InstalledMod {
   updateFileName?: string;
   updateDownloadUrl?: string;
   updating?: boolean;
+}
+
+interface ArquivoVersaoConteudo {
+  url: string;
+  filename: string;
+  primary?: boolean;
+}
+
+interface VersaoConteudo {
+  id: string;
+  version_number: string;
+  game_versions: string[];
+  loaders: string[];
+  date_published?: string;
+  files: ArquivoVersaoConteudo[];
 }
 
 interface ConteudoInstaladoDetalhado {
@@ -311,6 +332,19 @@ export default function InstanceManager({
   const [modoSelecaoLote, setModoSelecaoLote] = useState(false);
   const [arquivosSelecionados, setArquivosSelecionados] = useState<Set<string>>(new Set());
   const [processandoLote, setProcessandoLote] = useState(false);
+  const [menuConteudo, setMenuConteudo] = useState<{
+    item: InstalledMod;
+    filtro: ContentFilter;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [itemTrocaVersao, setItemTrocaVersao] = useState<InstalledMod | null>(null);
+  const [filtroTrocaVersao, setFiltroTrocaVersao] = useState<ContentFilter>("mods");
+  const [versoesConteudo, setVersoesConteudo] = useState<VersaoConteudo[]>([]);
+  const [versaoConteudoSelecionadaId, setVersaoConteudoSelecionadaId] = useState("");
+  const [carregandoVersoesConteudo, setCarregandoVersoesConteudo] = useState(false);
+  const [trocandoVersaoConteudo, setTrocandoVersaoConteudo] = useState(false);
+  const [erroTrocaVersao, setErroTrocaVersao] = useState<string | null>(null);
   const [indicadorRolagem, setIndicadorRolagem] = useState({
     altura: 0,
     topo: 0,
@@ -1342,6 +1376,127 @@ export default function InstanceManager({
     }
   };
 
+  const abrirDetalhesConteudoInstalado = (item: InstalledMod, filtro: ContentFilter) => {
+    if (!onAbrirProjeto || !item.projectId || !item.source) return;
+    onAbrirProjeto({
+      id: item.projectId,
+      title: item.name,
+      description: "",
+      icon_url: item.icon || "",
+      author: item.author,
+      slug: item.projectId,
+      source: item.source,
+      project_type: tipoProjetoPorFiltro(filtro),
+    });
+  };
+
+  const carregarVersoesConteudo = async (item: InstalledMod, filtro: ContentFilter) => {
+    if (!item.projectId || !item.source || !instanceDetails) return;
+    setCarregandoVersoesConteudo(true);
+    setErroTrocaVersao(null);
+    setVersoesConteudo([]);
+    try {
+      let versoes: VersaoConteudo[];
+      if (item.source === "curseforge") {
+        const loader = filtro === "mods"
+          ? (instanceDetails.loaderType || instanceDetails.mcType || "").toLowerCase()
+          : null;
+        versoes = await invoke<VersaoConteudo[]>("listar_versoes_projeto_curseforge", {
+          projectId: item.projectId,
+          gameVersion: instanceDetails.version,
+          loader,
+          projectType: tipoProjetoPorFiltro(filtro),
+        });
+      } else {
+        const parametros = new URLSearchParams({
+          game_versions: JSON.stringify([instanceDetails.version]),
+        });
+        if (filtro === "mods") {
+          const loader = (instanceDetails.loaderType || instanceDetails.mcType || "").toLowerCase();
+          if (["fabric", "forge", "quilt", "neoforge"].includes(loader)) {
+            parametros.set("loaders", JSON.stringify([loader]));
+          }
+        }
+        const resposta = await fetch(
+          `https://api.modrinth.com/v2/project/${item.projectId}/version?${parametros.toString()}`
+        );
+        if (!resposta.ok) throw new Error(`Modrinth respondeu com status ${resposta.status}.`);
+        versoes = await resposta.json() as VersaoConteudo[];
+      }
+
+      const compativeis = versoes.filter((versao) => versao.files?.length > 0);
+      if (compativeis.length === 0) {
+        throw new Error("Nenhuma versão compatível foi encontrada para esta instância.");
+      }
+      setVersoesConteudo(compativeis);
+      const nomeArquivoAtual = item.fileName.replace(/\.disabled$/i, "");
+      const atual = compativeis.find((versao) =>
+        versao.version_number === item.version ||
+        versao.files.some((arquivo) => arquivo.filename === nomeArquivoAtual)
+      );
+      setVersaoConteudoSelecionadaId(atual?.id || compativeis[0].id);
+    } catch (erro) {
+      setErroTrocaVersao(erro instanceof Error ? erro.message : String(erro));
+    } finally {
+      setCarregandoVersoesConteudo(false);
+    }
+  };
+
+  const abrirTrocaVersao = (item: InstalledMod, filtro: ContentFilter) => {
+    setMenuConteudo(null);
+    setItemTrocaVersao(item);
+    setFiltroTrocaVersao(filtro);
+    void carregarVersoesConteudo(item, filtro);
+  };
+
+  const trocarVersaoConteudo = async () => {
+    if (!itemTrocaVersao || !itemTrocaVersao.projectId || !itemTrocaVersao.source) return;
+    const versao = versoesConteudo.find((item) => item.id === versaoConteudoSelecionadaId);
+    const arquivo = versao?.files.find((item) => item.primary) || versao?.files[0];
+    if (!versao || !arquivo) return;
+
+    const tipoProjeto = tipoProjetoPorFiltro(filtroTrocaVersao);
+    setTrocandoVersaoConteudo(true);
+    setErroTrocaVersao(null);
+    try {
+      if (tipoProjeto === "mod") {
+        await invoke("install_mod", {
+          instanceId,
+          modInfo: {
+            id: itemTrocaVersao.projectId,
+            name: itemTrocaVersao.name,
+            description: "",
+            author: itemTrocaVersao.author,
+            version: versao.version_number,
+            download_url: arquivo.url,
+            file_name: arquivo.filename,
+            platform: itemTrocaVersao.source,
+            dependencies: [],
+            version_id: versao.id,
+          },
+        });
+      } else {
+        await invoke("install_project_file", {
+          instanceId,
+          projectType: tipoProjeto,
+          downloadUrl: arquivo.url,
+          fileName: arquivo.filename,
+        });
+      }
+
+      if (arquivo.filename !== itemTrocaVersao.fileName) {
+        await removerConteudoInstalado(itemTrocaVersao, filtroTrocaVersao);
+      }
+      await loadInstalledContent(filtroTrocaVersao);
+      setItemTrocaVersao(null);
+    } catch (erro) {
+      console.error("Erro ao trocar versão do conteúdo:", erro);
+      setErroTrocaVersao(erro instanceof Error ? erro.message : String(erro));
+    } finally {
+      setTrocandoVersaoConteudo(false);
+    }
+  };
+
   const deleteWorld = async (world: WorldInfo) => {
     if (!confirm(`Deletar mundo "${world.name}"? Esta ação não pode ser desfeita.`)) return;
     try {
@@ -2076,6 +2231,16 @@ export default function InstanceManager({
                     {filteredContent.map((mod: InstalledMod) => (
                       <div
                         key={mod.fileName}
+                        onContextMenu={(evento) => {
+                          evento.preventDefault();
+                          evento.stopPropagation();
+                          setMenuConteudo({
+                            item: mod,
+                            filtro: activeFilter,
+                            x: evento.clientX,
+                            y: evento.clientY,
+                          });
+                        }}
                         className={cn(
                           "group grid grid-cols-[2rem_3rem_minmax(0,1fr)_3.5rem_8rem]",
                           "items-center gap-x-4 border-b border-white/5 px-6 py-3 hover:bg-white/2"
@@ -2443,6 +2608,201 @@ export default function InstanceManager({
           </div>
         )}
       </div>
+
+      <MenuContextual
+        aberto={menuConteudo !== null}
+        x={menuConteudo?.x ?? 0}
+        y={menuConteudo?.y ?? 0}
+        onFechar={() => setMenuConteudo(null)}
+        rotulo="Ações do conteúdo instalado"
+      >
+        {menuConteudo && (
+          <>
+            <CabecalhoMenuContextual
+              titulo={menuConteudo.item.name}
+              subtitulo={`${menuConteudo.item.version || "Versão desconhecida"} · ${menuConteudo.item.fileName}`}
+            />
+            <ItemMenuContextual
+              icone={<Package size={13} />}
+              disabled={!menuConteudo.item.projectId || !menuConteudo.item.source || !onAbrirProjeto}
+              onClick={() => {
+                abrirDetalhesConteudoInstalado(menuConteudo.item, menuConteudo.filtro);
+                setMenuConteudo(null);
+              }}
+            >
+              Ver detalhes do projeto
+            </ItemMenuContextual>
+            <ItemMenuContextual
+              icone={<RefreshCw size={13} />}
+              disabled={!menuConteudo.item.projectId || !menuConteudo.item.source}
+              onClick={() => abrirTrocaVersao(menuConteudo.item, menuConteudo.filtro)}
+            >
+              Trocar versão
+            </ItemMenuContextual>
+            {menuConteudo.item.updateAvailable && (
+              <ItemMenuContextual icone={<Download size={13} />} destaque onClick={() => {
+                const { item, filtro } = menuConteudo;
+                setMenuConteudo(null);
+                void atualizarItemInstalado(item, filtro);
+              }}>
+                Atualizar para a mais recente
+              </ItemMenuContextual>
+            )}
+            <ItemMenuContextual icone={<MoreVertical size={13} />} onClick={() => {
+              const item = menuConteudo.item;
+              setMenuConteudo(null);
+              void toggleMod(item);
+            }}>
+              {menuConteudo.item.enabled ? "Desativar" : "Ativar"}
+            </ItemMenuContextual>
+            <ItemMenuContextual icone={<Plus size={13} />} onClick={() => {
+              alternarSelecaoArquivo(menuConteudo.item.fileName);
+              setMenuConteudo(null);
+            }}>
+              {arquivosSelecionados.has(menuConteudo.item.fileName) ? "Remover da seleção" : "Selecionar"}
+            </ItemMenuContextual>
+            <SeparadorMenuContextual />
+            <ItemMenuContextual icone={<Trash2 size={13} />} perigo onClick={() => {
+              const item = menuConteudo.item;
+              setMenuConteudo(null);
+              void deleteMod(item);
+            }}>
+              Remover conteúdo
+            </ItemMenuContextual>
+          </>
+        )}
+      </MenuContextual>
+
+      {itemTrocaVersao && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-5 backdrop-blur-sm"
+          onMouseDown={() => {
+            if (!trocandoVersaoConteudo) setItemTrocaVersao(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-trocar-versao"
+            className="flex max-h-[78vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-white/15 bg-[#151516] shadow-2xl"
+            onMouseDown={(evento) => evento.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-white/8 px-5 py-4">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300/70">
+                  Versão instalada: {itemTrocaVersao.version || "desconhecida"}
+                </p>
+                <h3 id="titulo-trocar-versao" className="mt-1 truncate text-base font-black text-white">
+                  Trocar versão de {itemTrocaVersao.name}
+                </h3>
+                <p className="mt-1 text-xs text-white/40">
+                  Somente versões compatíveis com Minecraft {instanceDetails?.version} são exibidas.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Fechar"
+                disabled={trocandoVersaoConteudo}
+                onClick={() => setItemTrocaVersao(null)}
+                className="rounded-lg p-2 text-white/35 transition-colors hover:bg-white/8 hover:text-white disabled:opacity-30"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {carregandoVersoesConteudo ? (
+                <div className="flex items-center justify-center gap-2 py-14 text-xs text-white/45">
+                  <Loader2 size={16} className="animate-spin text-emerald-300" />
+                  Buscando versões compatíveis...
+                </div>
+              ) : erroTrocaVersao && versoesConteudo.length === 0 ? (
+                <div className="border border-red-400/15 bg-red-400/5 px-4 py-3 text-xs text-red-200/80">
+                  {erroTrocaVersao}
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {versoesConteudo.map((versao, indice) => {
+                    const arquivo = versao.files.find((item) => item.primary) || versao.files[0];
+                    const nomeAtual = itemTrocaVersao.fileName.replace(/\.disabled$/i, "");
+                    const atual = versao.version_number === itemTrocaVersao.version || arquivo?.filename === nomeAtual;
+                    return (
+                      <label
+                        key={versao.id}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 transition-colors",
+                          versaoConteudoSelecionadaId === versao.id
+                            ? "border-emerald-400/35 bg-emerald-400/8"
+                            : "border-white/6 bg-white/[0.02] hover:bg-white/[0.05]"
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="versao-conteudo"
+                          value={versao.id}
+                          checked={versaoConteudoSelecionadaId === versao.id}
+                          onChange={() => setVersaoConteudoSelecionadaId(versao.id)}
+                          className="accent-emerald-400"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-bold text-white">{versao.version_number}</span>
+                            {indice === 0 && (
+                              <span className="shrink-0 bg-emerald-400/10 px-1.5 py-0.5 text-[8px] font-black uppercase text-emerald-300">
+                                Mais recente
+                              </span>
+                            )}
+                            {atual && (
+                              <span className="shrink-0 bg-white/8 px-1.5 py-0.5 text-[8px] font-black uppercase text-white/50">
+                                Atual
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 truncate text-[10px] text-white/35">
+                            {arquivo?.filename}
+                            {versao.date_published
+                              ? ` · ${new Date(versao.date_published).toLocaleDateString("pt-BR")}`
+                              : ""}
+                          </p>
+                        </div>
+                        <span className="shrink-0 text-[9px] font-semibold uppercase text-white/25">
+                          {versao.loaders?.join(", ") || tipoProjetoPorFiltro(filtroTrocaVersao)}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {erroTrocaVersao && versoesConteudo.length > 0 && (
+                <p className="mt-3 text-xs text-red-300/80">{erroTrocaVersao}</p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 border-t border-white/8 px-5 py-3">
+              <p className="text-[10px] text-white/30">O arquivo atual só é removido após a nova versão ser instalada.</p>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  disabled={trocandoVersaoConteudo}
+                  onClick={() => setItemTrocaVersao(null)}
+                  className="px-3 py-2 text-xs font-bold text-white/45 hover:text-white disabled:opacity-30"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={carregandoVersoesConteudo || trocandoVersaoConteudo || !versaoConteudoSelecionadaId}
+                  onClick={() => void trocarVersaoConteudo()}
+                  className="flex items-center gap-2 bg-emerald-400 px-4 py-2 text-xs font-black text-black transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  {trocandoVersaoConteudo && <Loader2 size={13} className="animate-spin" />}
+                  Trocar versão
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1852,6 +1852,7 @@ export default function SocialSidebar({
           amigoSelecionadoPerfilId={chatAberto ? amigoSelecionadoPerfilId : null}
           onAbrirChat={abrirChatComAmigo}
           onAbrirAtividade={onAbrirAtividadeAmigo}
+          onRemoverAmigo={(friendProfileId) => void removerAmigo(friendProfileId)}
           formatarTempoRelativo={tempoRelativo}
           rotuloStatus={rotuloStatus}
         />
