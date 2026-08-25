@@ -158,6 +158,7 @@ pub(crate) struct ArquivoVersaoProjetoCurseforge {
 pub(crate) struct VersaoProjetoCurseforge {
     id: String,
     version_number: String,
+    version_type: String,
     game_versions: Vec<String>,
     loaders: Vec<String>,
     date_published: Option<String>,
@@ -199,6 +200,12 @@ fn mapear_versao_projeto_curseforge(
     Some(VersaoProjetoCurseforge {
         id,
         version_number,
+        version_type: match arquivo["releaseType"].as_u64() {
+            Some(2) => "beta",
+            Some(3) => "alpha",
+            _ => "release",
+        }
+        .to_string(),
         game_versions,
         loaders,
         date_published: arquivo["fileDate"].as_str().map(str::to_string),

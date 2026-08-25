@@ -40,6 +40,7 @@ import {
   MenuContextual,
   SeparadorMenuContextual,
 } from "./context-menu/MenuContextual";
+import { AreaRolagemPersonalizada } from "./scroll/AreaRolagemPersonalizada";
 
 interface InstanceManagerProps {
   instanceId: string;
@@ -94,10 +95,37 @@ interface ArquivoVersaoConteudo {
 interface VersaoConteudo {
   id: string;
   version_number: string;
+  version_type?: string;
   game_versions: string[];
   loaders: string[];
   date_published?: string;
   files: ArquivoVersaoConteudo[];
+}
+
+type EstabilidadeVersao = "release" | "beta" | "alpha";
+
+const ROTULOS_ESTABILIDADE: Record<EstabilidadeVersao, string> = {
+  release: "Estável",
+  beta: "Beta",
+  alpha: "Alpha",
+};
+
+const CLASSES_ESTABILIDADE: Record<EstabilidadeVersao, string> = {
+  release: "border-emerald-400/20 bg-emerald-400/8 text-emerald-300",
+  beta: "border-amber-400/20 bg-amber-400/8 text-amber-300",
+  alpha: "border-red-400/20 bg-red-400/8 text-red-300",
+};
+
+function obterEstabilidadeVersao(versao: VersaoConteudo): EstabilidadeVersao {
+  const tipoOficial = versao.version_type?.trim().toLowerCase();
+  if (tipoOficial === "alpha" || tipoOficial === "beta" || tipoOficial === "release") {
+    return tipoOficial;
+  }
+
+  const identificador = `${versao.version_number} ${versao.files.map((arquivo) => arquivo.filename).join(" ")}`;
+  if (/\b(alpha|snapshot|nightly|dev)\b/i.test(identificador)) return "alpha";
+  if (/\b(beta|pre|preview|rc)\b/i.test(identificador)) return "beta";
+  return "release";
 }
 
 interface ConteudoInstaladoDetalhado {
@@ -2698,6 +2726,19 @@ export default function InstanceManager({
                 <p className="mt-1 text-xs text-white/40">
                   Somente versões compatíveis com Minecraft {instanceDetails?.version} são exibidas.
                 </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5" aria-label="Tipos de versão">
+                  {(["release", "beta", "alpha"] as EstabilidadeVersao[]).map((tipo) => (
+                    <span
+                      key={tipo}
+                      className={cn(
+                        "border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide",
+                        CLASSES_ESTABILIDADE[tipo]
+                      )}
+                    >
+                      {ROTULOS_ESTABILIDADE[tipo]}
+                    </span>
+                  ))}
+                </div>
               </div>
               <button
                 type="button"
@@ -2710,7 +2751,11 @@ export default function InstanceManager({
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+            <AreaRolagemPersonalizada
+              className="flex-1"
+              classNameConteudo="p-3"
+              rotulo="Lista de versões disponíveis"
+            >
               {carregandoVersoesConteudo ? (
                 <div className="flex items-center justify-center gap-2 py-14 text-xs text-white/45">
                   <Loader2 size={16} className="animate-spin text-emerald-300" />
@@ -2726,6 +2771,7 @@ export default function InstanceManager({
                     const arquivo = versao.files.find((item) => item.primary) || versao.files[0];
                     const nomeAtual = itemTrocaVersao.fileName.replace(/\.disabled$/i, "");
                     const atual = versao.version_number === itemTrocaVersao.version || arquivo?.filename === nomeAtual;
+                    const estabilidade = obterEstabilidadeVersao(versao);
                     return (
                       <label
                         key={versao.id}
@@ -2747,6 +2793,14 @@ export default function InstanceManager({
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate text-sm font-bold text-white">{versao.version_number}</span>
+                            <span
+                              className={cn(
+                                "shrink-0 border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide",
+                                CLASSES_ESTABILIDADE[estabilidade]
+                              )}
+                            >
+                              {ROTULOS_ESTABILIDADE[estabilidade]}
+                            </span>
                             {indice === 0 && (
                               <span className="shrink-0 bg-emerald-400/10 px-1.5 py-0.5 text-[8px] font-black uppercase text-emerald-300">
                                 Mais recente
@@ -2776,7 +2830,7 @@ export default function InstanceManager({
               {erroTrocaVersao && versoesConteudo.length > 0 && (
                 <p className="mt-3 text-xs text-red-300/80">{erroTrocaVersao}</p>
               )}
-            </div>
+            </AreaRolagemPersonalizada>
 
             <div className="flex items-center justify-between gap-3 border-t border-white/8 px-5 py-3">
               <p className="text-[10px] text-white/30">O arquivo atual só é removido após a nova versão ser instalada.</p>
