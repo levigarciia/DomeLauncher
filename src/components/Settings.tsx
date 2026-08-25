@@ -23,6 +23,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import { EsqueletoAba } from "./EsqueletoCarregamento";
 import { ehCorHexValida, normalizarCorDestaque } from "../lib/corDestaque";
+import { SeletorCorDestaque } from "./settings/SeletorCorDestaque";
 import { EVENTO_INSTANCIAS_ATUALIZADAS } from "../lib/eventosTransferenciaSocial";
 
 // Tipos
@@ -77,13 +78,6 @@ const JVM_PRESETS = [
     args: "",
   },
 ];
-
-const CORES_DESTAQUE_PREDEFINIDAS = [
-  { nome: "Azul", codigo: "#3B82F6" },
-  { nome: "Vermelho", codigo: "#EF4444" },
-  { nome: "Verde", codigo: "#10B981" },
-  { nome: "Amarelo", codigo: "#EAB308" },
-] as const;
 
 export default function Settings() {
   const [settings, setSettings] = useState<GlobalSettings>({
@@ -233,8 +227,6 @@ export default function Settings() {
   const resolucaoAtual = RESOLUTIONS.find(
     (r) => r.w === settings.width && r.h === settings.height
   );
-  const codigoCorValido = ehCorHexValida(codigoCor);
-
   const selecionarPastaInstancias = async () => {
     setSelecionandoPasta(true);
     try {
@@ -285,6 +277,67 @@ export default function Settings() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <div className="flex flex-col gap-6">
+
+      {/* ===== LAUNCHER ===== */}
+      <Secao
+        icone={<Rocket className="text-purple-400" size={20} />}
+        titulo="Launcher"
+        descricao="Comportamento do launcher"
+      >
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Pasta de instâncias</p>
+          <p className="text-xs text-white/30">
+            O launcher detectará e criará instâncias diretamente nesta pasta. Arquivos existentes não serão movidos.
+          </p>
+          <div className="flex items-stretch gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 border border-white/10 bg-black/20 px-3">
+              <FolderOpen size={15} className="shrink-0 text-emerald-300/70" />
+              <span className="truncate font-mono text-[11px] text-white/60" title={settings.instances_path}>
+                {settings.instances_path}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={selecionarPastaInstancias}
+              disabled={selecionandoPasta}
+              className="flex items-center gap-2 border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/70 transition-colors hover:border-emerald-400/30 hover:text-emerald-200 disabled:cursor-wait disabled:opacity-50"
+            >
+              {selecionandoPasta ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+              Escolher pasta
+            </button>
+          </div>
+        </div>
+
+        <ToggleItem
+          titulo="Discord Rich Presence"
+          descricao="Mostra no Discord quando você está no launcher e no Minecraft"
+          ativo={settings.discord_rpc_ativo}
+          onChange={(v) => atualizarConfig("discord_rpc_ativo", v)}
+        />
+
+        <ToggleItem
+          titulo="Fechar ao Iniciar"
+          descricao="Minimiza o launcher quando o Minecraft iniciar"
+          ativo={settings.close_on_launch}
+          onChange={(v) => atualizarConfig("close_on_launch", v)}
+        />
+
+        <ToggleItem
+          titulo="Mostrar Snapshots"
+          descricao="Exibir versões snapshot na lista de versões"
+          ativo={settings.show_snapshots}
+          onChange={(v) => atualizarConfig("show_snapshots", v)}
+        />
+
+        <SeletorCorDestaque
+          cor={settings.cor_destaque}
+          codigo={codigoCor}
+          onAlterar={atualizarCodigoCor}
+          onRestaurar={() => setCodigoCor(normalizarCorDestaque(settings.cor_destaque))}
+        />
+      </Secao>
 
       {/* ===== DESEMPENHO ===== */}
       <Secao
@@ -635,123 +688,7 @@ export default function Settings() {
         </div>
       </Secao>
 
-      {/* ===== LAUNCHER ===== */}
-      <Secao
-        icone={<Rocket className="text-purple-400" size={20} />}
-        titulo="Launcher"
-        descricao="Comportamento do launcher"
-      >
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Cor de destaque</p>
-          <p className="text-xs text-white/30">
-            Escolha uma cor pronta ou informe um código hexadecimal personalizado.
-          </p>
-          <div className="grid max-w-md grid-cols-2 gap-2 sm:grid-cols-4">
-            {CORES_DESTAQUE_PREDEFINIDAS.map((cor) => {
-              const selecionada = settings.cor_destaque === cor.codigo;
-              return (
-                <button
-                  type="button"
-                  key={cor.codigo}
-                  onClick={() => atualizarCodigoCor(cor.codigo)}
-                  aria-pressed={selecionada}
-                  className={`flex items-center gap-2 border px-2.5 py-2 text-[10px] font-bold transition-colors ${
-                    selecionada
-                      ? "border-white/30 bg-white/10 text-white"
-                      : "border-white/8 bg-white/[0.03] text-white/45 hover:border-white/20 hover:text-white/75"
-                  }`}
-                >
-                  <span
-                    className="h-4 w-4 shrink-0 border border-white/20"
-                    style={{ backgroundColor: cor.codigo }}
-                  />
-                  <span className="truncate">{cor.nome}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex max-w-xs items-center border border-white/10 bg-black/20 p-1.5 focus-within:border-emerald-400/45">
-            <label
-              className="relative h-8 w-8 shrink-0 cursor-pointer border border-white/20 transition-all hover:border-white/45 focus-within:ring-2 focus-within:ring-emerald-400/45"
-              title="Abrir seletor de cores"
-            >
-              <span
-                className="absolute inset-0"
-                style={{ backgroundColor: codigoCorValido ? codigoCor : settings.cor_destaque }}
-              />
-              <input
-                type="color"
-                value={codigoCorValido ? codigoCor : settings.cor_destaque}
-                onChange={(evento) => atualizarCodigoCor(evento.target.value)}
-                aria-label="Selecionar cor de destaque"
-                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-              />
-            </label>
-            <input
-              type="text"
-              value={codigoCor}
-              onChange={(evento) => atualizarCodigoCor(evento.target.value)}
-              onBlur={() => setCodigoCor(normalizarCorDestaque(settings.cor_destaque))}
-              maxLength={7}
-              spellCheck={false}
-              aria-label="Código hexadecimal da cor de destaque"
-              className="min-w-0 flex-1 bg-transparent px-3 font-mono text-sm font-bold uppercase tracking-[0.12em] text-white outline-none"
-              placeholder="#10B981"
-            />
-            <span className={`px-2 text-[9px] font-black uppercase tracking-wider ${
-              codigoCorValido ? "text-emerald-300/65" : "text-red-400"
-            }`}>
-              {codigoCorValido ? "Hex" : "Inválido"}
-            </span>
-          </div>
-        </div>
-
-        <div className="space-y-2 border-t border-white/5 pt-4">
-          <p className="text-sm font-medium">Pasta de instâncias</p>
-          <p className="text-xs text-white/30">
-            O launcher detectará e criará instâncias diretamente nesta pasta. Arquivos existentes não serão movidos.
-          </p>
-          <div className="flex items-stretch gap-2">
-            <div className="flex min-w-0 flex-1 items-center gap-2 border border-white/10 bg-black/20 px-3">
-              <FolderOpen size={15} className="shrink-0 text-emerald-300/70" />
-              <span className="truncate font-mono text-[11px] text-white/60" title={settings.instances_path}>
-                {settings.instances_path}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={selecionarPastaInstancias}
-              disabled={selecionandoPasta}
-              className="flex items-center gap-2 border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/70 transition-colors hover:border-emerald-400/30 hover:text-emerald-200 disabled:cursor-wait disabled:opacity-50"
-            >
-              {selecionandoPasta ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
-              Escolher pasta
-            </button>
-          </div>
-        </div>
-
-        <ToggleItem
-          titulo="Discord Rich Presence"
-          descricao="Mostra no Discord quando você está no launcher e no Minecraft"
-          ativo={settings.discord_rpc_ativo}
-          onChange={(v) => atualizarConfig("discord_rpc_ativo", v)}
-        />
-
-        <ToggleItem
-          titulo="Fechar ao Iniciar"
-          descricao="Minimiza o launcher quando o Minecraft iniciar"
-          ativo={settings.close_on_launch}
-          onChange={(v) => atualizarConfig("close_on_launch", v)}
-        />
-
-        <ToggleItem
-          titulo="Mostrar Snapshots"
-          descricao="Exibir versões snapshot na lista de versões"
-          ativo={settings.show_snapshots}
-          onChange={(v) => atualizarConfig("show_snapshots", v)}
-        />
-      </Secao>
-
+      </div>
     </div>
   );
 }

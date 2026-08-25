@@ -406,7 +406,7 @@ export default function Explore({
                     className={cn(
                       "p-2 rounded-xl transition-all",
                       favorites.has(item.id)
-                        ? "favoritos-fundo-suave favoritos-texto"
+                        ? "bg-pink-500/20 text-pink-400"
                         : "bg-white/5 hover:bg-white/10 text-white/40"
                     )}
                   >

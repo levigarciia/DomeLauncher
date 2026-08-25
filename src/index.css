@@ -32,8 +32,6 @@
   --cor-acento-800: #065f46;
   --cor-acento-900: #064e3b;
   --cor-acento-rgb: 16, 185, 129;
-  --cor-favoritos: #83768e;
-  --cor-favoritos-rgb: 131, 118, 142;
   --mc-verde: var(--cor-acento-500);
   --mc-verde-hover: var(--cor-acento-400);
   --mc-vermelho: #d55656;
@@ -47,27 +45,6 @@
   --color-emerald-700: var(--cor-acento-700);
   --color-emerald-800: var(--cor-acento-800);
   --color-emerald-900: var(--cor-acento-900);
-}
-
-.favoritos-texto {
-  color: var(--cor-favoritos);
-}
-
-.favoritos-fundo-suave {
-  background-color: rgba(var(--cor-favoritos-rgb), 0.12);
-}
-
-.favoritos-borda {
-  border-color: rgba(var(--cor-favoritos-rgb), 0.28);
-}
-
-.favoritos-foco:focus {
-  --tw-ring-color: rgba(var(--cor-favoritos-rgb), 0.4);
-}
-
-.favoritos-selecionado {
-  color: white;
-  background-color: var(--cor-favoritos);
 }
 
 * {

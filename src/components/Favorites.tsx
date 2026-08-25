@@ -163,8 +163,8 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
     <div className="space-y-6">
       {/* Cabeçalho */}
       <div className="flex items-center gap-3 mb-2">
-        <div className="favoritos-fundo-suave favoritos-borda rounded-2xl border p-3">
-          <Heart className="favoritos-texto" size={24} />
+        <div className="p-3 bg-pink-500/10 rounded-2xl border border-pink-500/20">
+          <Heart className="text-pink-500" size={24} />
         </div>
         <div className="flex-1">
           <p className="text-xs uppercase tracking-wider text-white/35 font-bold">
@@ -186,7 +186,7 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
             value={busca}
             onChange={(e) => setBusca(e.target.value)}
             placeholder="Buscar nos favoritos..."
-            className="favoritos-foco w-full rounded-2xl border border-white/10 bg-white/5 py-3 pl-11 pr-4 text-sm transition-all focus:outline-none focus:ring-2"
+            className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 pl-11 pr-4 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500/40 transition-all"
           />
         </div>
 
@@ -201,7 +201,7 @@ export default function Favorites({ onAbrirProjeto }: FavoritesProps) {
                 className={cn(
                   "px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5",
                   filtroTipo === filtro.id
-                    ? "favoritos-selecionado"
+                    ? "bg-pink-500 text-white"
                     : "text-white/40 hover:text-white"
                 )}
               >
