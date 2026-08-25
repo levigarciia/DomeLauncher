@@ -124,7 +124,7 @@ export function AreaRolagemPersonalizada({
     };
 
     return (
-        <div className={cn("relative min-h-0", className)}>
+        <div className={cn("relative min-h-0 overflow-hidden", className)}>
             <div
                 ref={areaRef}
                 className="h-full overflow-y-auto pr-2 scrollbar-hide"

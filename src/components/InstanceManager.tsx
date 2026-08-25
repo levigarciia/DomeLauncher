@@ -2712,15 +2712,12 @@ export default function InstanceManager({
             role="dialog"
             aria-modal="true"
             aria-labelledby="titulo-trocar-versao"
-            className="flex max-h-[78vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-white/15 bg-[#151516] shadow-2xl"
+            className="isolate flex max-h-[78vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-white/15 bg-[#151516] shadow-2xl"
             onMouseDown={(evento) => evento.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-4 border-b border-white/8 px-5 py-4">
+            <div className="relative z-10 flex shrink-0 items-start justify-between gap-4 border-b border-white/8 bg-[#151516] px-5 py-4">
               <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-emerald-300/70">
-                  Versão instalada: {itemTrocaVersao.version || "desconhecida"}
-                </p>
-                <h3 id="titulo-trocar-versao" className="mt-1 truncate text-base font-black text-white">
+                <h3 id="titulo-trocar-versao" className="truncate text-base font-black text-white">
                   Trocar versão de {itemTrocaVersao.name}
                 </h3>
                 <p className="mt-1 text-xs text-white/40">
@@ -2753,7 +2750,7 @@ export default function InstanceManager({
 
             <AreaRolagemPersonalizada
               className="flex-1"
-              classNameConteudo="p-3"
+              classNameConteudo="p-3 pb-5"
               rotulo="Lista de versões disponíveis"
             >
               {carregandoVersoesConteudo ? (
@@ -2832,8 +2829,10 @@ export default function InstanceManager({
               )}
             </AreaRolagemPersonalizada>
 
-            <div className="flex items-center justify-between gap-3 border-t border-white/8 px-5 py-3">
-              <p className="text-[10px] text-white/30">O arquivo atual só é removido após a nova versão ser instalada.</p>
+            <div className="relative z-10 grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-t border-white/8 bg-[#151516] px-5 py-3 shadow-[0_-10px_24px_rgba(0,0,0,0.28)]">
+              <p className="max-w-64 text-[10px] leading-relaxed text-white/30">
+                O arquivo atual só é removido após a nova versão ser instalada.
+              </p>
               <div className="flex shrink-0 gap-2">
                 <button
                   type="button"
