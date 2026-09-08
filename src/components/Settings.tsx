@@ -15,23 +15,18 @@ import {
   Terminal,
   Sparkles,
   Shield,
+  FolderOpen,
   X,
 } from "../iconesPixelados";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { motion, AnimatePresence } from "framer-motion";
 import { EsqueletoAba } from "./EsqueletoCarregamento";
+import { ehCorHexValida, normalizarCorDestaque } from "../lib/corDestaque";
+import { SeletorCorDestaque } from "./settings/SeletorCorDestaque";
+import { EVENTO_INSTANCIAS_ATUALIZADAS } from "../lib/eventosTransferenciaSocial";
 
 // Tipos
-type CorDestaque = "verde" | "azul" | "laranja" | "rosa" | "ciano";
-
-function normalizarCorDestaque(valor: unknown): CorDestaque {
-  const texto = String(valor || "").toLowerCase().trim();
-  if (texto === "azul" || texto === "laranja" || texto === "rosa" || texto === "ciano") {
-    return texto;
-  }
-  return "verde";
-}
-
 interface GlobalSettings {
   ram_mb: number;
   java_path: string | null;
@@ -42,7 +37,8 @@ interface GlobalSettings {
   close_on_launch: boolean;
   show_snapshots: boolean;
   discord_rpc_ativo: boolean;
-  cor_destaque: CorDestaque;
+  cor_destaque: string;
+  instances_path: string;
 }
 
 interface JavaInfo {
@@ -83,18 +79,6 @@ const JVM_PRESETS = [
   },
 ];
 
-const OPCOES_COR_DESTAQUE: Array<{
-  id: CorDestaque;
-  nome: string;
-  cor: string;
-}> = [
-  { id: "verde", nome: "Verde", cor: "#34d399" },
-  { id: "azul", nome: "Azul", cor: "#60a5fa" },
-  { id: "laranja", nome: "Laranja", cor: "#fb923c" },
-  { id: "rosa", nome: "Rosa", cor: "#f472b6" },
-  { id: "ciano", nome: "Ciano", cor: "#22d3ee" },
-];
-
 export default function Settings() {
   const [settings, setSettings] = useState<GlobalSettings>({
     ram_mb: 4096,
@@ -106,7 +90,8 @@ export default function Settings() {
     close_on_launch: false,
     show_snapshots: false,
     discord_rpc_ativo: true,
-    cor_destaque: "verde",
+    cor_destaque: "#10B981",
+    instances_path: "",
   });
 
   const [javas, setJavas] = useState<JavaInfo[]>([]);
@@ -117,9 +102,12 @@ export default function Settings() {
   const [erro, setErro] = useState<string | null>(null);
   const [jvmAberto, setJvmAberto] = useState(false);
   const [javaAberto, setJavaAberto] = useState(true);
+  const [codigoCor, setCodigoCor] = useState("#10B981");
+  const [selecionandoPasta, setSelecionandoPasta] = useState(false);
   const ignorarPrimeiraPersistencia = useRef(true);
   const configuracoesAtuais = useRef(settings);
   const alteracoesPendentes = useRef(false);
+  const caminhoInstanciasPersistido = useRef("");
 
   // Carregar configurações e dados
   useEffect(() => {
@@ -137,8 +125,10 @@ export default function Settings() {
         ...cfg,
         cor_destaque: normalizarCorDestaque(cfg?.cor_destaque),
       };
+      caminhoInstanciasPersistido.current = configuracoesCarregadas.instances_path;
       configuracoesAtuais.current = configuracoesCarregadas;
       setSettings(configuracoesCarregadas);
+      setCodigoCor(configuracoesCarregadas.cor_destaque);
       setSystemRam(ram);
       detectarJavas();
     } catch (e) {
@@ -192,6 +182,10 @@ export default function Settings() {
   ) => {
     try {
       await invoke("save_settings", { settings: configuracoes });
+      if (configuracoes.instances_path !== caminhoInstanciasPersistido.current) {
+        caminhoInstanciasPersistido.current = configuracoes.instances_path;
+        window.dispatchEvent(new CustomEvent(EVENTO_INSTANCIAS_ATUALIZADAS));
+      }
       if (configuracoesAtuais.current === configuracoes) {
         alteracoesPendentes.current = false;
       }
@@ -200,8 +194,10 @@ export default function Settings() {
           detail: { cor: configuracoes.cor_destaque },
         })
       );
+      return true;
     } catch (e: unknown) {
       if (mostrarErro) setErro(`Erro ao salvar: ${e}`);
+      return false;
     }
   }, []);
 
@@ -231,6 +227,32 @@ export default function Settings() {
   const resolucaoAtual = RESOLUTIONS.find(
     (r) => r.w === settings.width && r.h === settings.height
   );
+  const selecionarPastaInstancias = async () => {
+    setSelecionandoPasta(true);
+    try {
+      const caminho = await openDialog({
+        directory: true,
+        multiple: false,
+        defaultPath: settings.instances_path || undefined,
+        title: "Escolher pasta de instâncias do Minecraft",
+      });
+      if (typeof caminho === "string") {
+        atualizarConfig("instances_path", caminho);
+      }
+    } catch (e: unknown) {
+      setErro(`Não foi possível selecionar a pasta: ${e}`);
+    } finally {
+      setSelecionandoPasta(false);
+    }
+  };
+
+  const atualizarCodigoCor = (valor: string) => {
+    const codigo = valor.trim().toUpperCase();
+    setCodigoCor(codigo);
+    if (ehCorHexValida(codigo)) {
+      atualizarConfig("cor_destaque", codigo);
+    }
+  };
 
   if (carregando) {
     return <EsqueletoAba />;
@@ -256,18 +278,79 @@ export default function Settings() {
         )}
       </AnimatePresence>
 
+      <div className="flex flex-col gap-6">
+
+      {/* ===== LAUNCHER ===== */}
+      <Secao
+        icone={<Rocket className="text-purple-400" size={20} />}
+        titulo="Launcher"
+        descricao="Comportamento do launcher"
+      >
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Pasta de instâncias</p>
+          <p className="text-xs text-white/30">
+            O launcher detectará e criará instâncias diretamente nesta pasta. Arquivos existentes não serão movidos.
+          </p>
+          <div className="flex items-stretch gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2 border border-white/10 bg-black/20 px-3">
+              <FolderOpen size={15} className="shrink-0 text-emerald-300/70" />
+              <span className="truncate font-mono text-[11px] text-white/60" title={settings.instances_path}>
+                {settings.instances_path}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={selecionarPastaInstancias}
+              disabled={selecionandoPasta}
+              className="flex items-center gap-2 border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-bold text-white/70 transition-colors hover:border-emerald-400/30 hover:text-emerald-200 disabled:cursor-wait disabled:opacity-50"
+            >
+              {selecionandoPasta ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+              Escolher pasta
+            </button>
+          </div>
+        </div>
+
+        <ToggleItem
+          titulo="Discord Rich Presence"
+          descricao="Mostra no Discord quando você está no launcher e no Minecraft"
+          ativo={settings.discord_rpc_ativo}
+          onChange={(v) => atualizarConfig("discord_rpc_ativo", v)}
+        />
+
+        <ToggleItem
+          titulo="Fechar ao Iniciar"
+          descricao="Minimiza o launcher quando o Minecraft iniciar"
+          ativo={settings.close_on_launch}
+          onChange={(v) => atualizarConfig("close_on_launch", v)}
+        />
+
+        <ToggleItem
+          titulo="Mostrar Snapshots"
+          descricao="Exibir versões snapshot na lista de versões"
+          ativo={settings.show_snapshots}
+          onChange={(v) => atualizarConfig("show_snapshots", v)}
+        />
+
+        <SeletorCorDestaque
+          cor={settings.cor_destaque}
+          codigo={codigoCor}
+          onAlterar={atualizarCodigoCor}
+          onRestaurar={() => setCodigoCor(normalizarCorDestaque(settings.cor_destaque))}
+        />
+      </Secao>
+
       {/* ===== DESEMPENHO ===== */}
       <Secao
         icone={<Cpu className="text-emerald-400" size={20} />}
         titulo="Desempenho"
-        descricao="Configurações de memória RAM e JVM"
+        descricao="Memória padrão dos modpacks e configurações da JVM"
       >
         {/* RAM Slider */}
         <div className="space-y-3">
           <div className="flex justify-between items-center">
             <label className="text-sm font-medium text-white/60 flex items-center gap-2">
               <HardDrive size={14} />
-              Memória RAM Alocada
+              Memória RAM padrão dos modpacks
             </label>
             <div className="flex items-center gap-2">
               <span className="text-emerald-400 font-bold text-lg tabular-nums">
@@ -278,6 +361,10 @@ export default function Settings() {
               </span>
             </div>
           </div>
+
+          <p className="text-[11px] leading-relaxed text-white/35">
+            Este valor é usado por todos os modpacks que estiverem com a alocação própria desativada.
+          </p>
 
           {/* Barra visual personalizada */}
           <div className="relative">
@@ -601,60 +688,7 @@ export default function Settings() {
         </div>
       </Secao>
 
-      {/* ===== LAUNCHER ===== */}
-      <Secao
-        icone={<Rocket className="text-purple-400" size={20} />}
-        titulo="Launcher"
-        descricao="Comportamento do launcher"
-      >
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Cor de destaque</p>
-          <p className="text-xs text-white/30">
-            Essa cor será aplicada nos destaques principais do launcher.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {OPCOES_COR_DESTAQUE.map((opcao) => (
-              <button
-                key={opcao.id}
-                onClick={() => atualizarConfig("cor_destaque", opcao.id)}
-                className={`flex items-center gap-2 px-2.5 py-1.5 border text-xs font-bold transition-all ${
-                  settings.cor_destaque === opcao.id
-                    ? "bg-white/10 border-white/30 text-white"
-                    : "bg-white/3 border-white/10 text-white/65 hover:bg-white/6 hover:text-white"
-                }`}
-              >
-                <span
-                  className="h-3 w-3 border border-white/25"
-                  style={{ backgroundColor: opcao.cor }}
-                />
-                {opcao.nome}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <ToggleItem
-          titulo="Discord Rich Presence"
-          descricao="Mostra no Discord quando você está no launcher e no Minecraft"
-          ativo={settings.discord_rpc_ativo}
-          onChange={(v) => atualizarConfig("discord_rpc_ativo", v)}
-        />
-
-        <ToggleItem
-          titulo="Fechar ao Iniciar"
-          descricao="Minimiza o launcher quando o Minecraft iniciar"
-          ativo={settings.close_on_launch}
-          onChange={(v) => atualizarConfig("close_on_launch", v)}
-        />
-
-        <ToggleItem
-          titulo="Mostrar Snapshots"
-          descricao="Exibir versões snapshot na lista de versões"
-          ativo={settings.show_snapshots}
-          onChange={(v) => atualizarConfig("show_snapshots", v)}
-        />
-      </Secao>
-
+      </div>
     </div>
   );
 }
@@ -672,18 +706,44 @@ function Secao({
   descricao: string;
   children: React.ReactNode;
 }) {
+  const [aberta, setAberta] = useState(false);
+
   return (
-    <section>
-      <div className="flex items-center gap-3 mb-3">
-        {icone}
-        <div>
+    <section className="overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02]">
+      <button
+        type="button"
+        onClick={() => setAberta((valor) => !valor)}
+        aria-expanded={aberta}
+        className="flex w-full items-center gap-3 px-5 py-4 text-left transition-colors hover:bg-white/[0.025]"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/[0.04]">
+          {icone}
+        </span>
+        <div className="min-w-0 flex-1">
           <h3 className="text-base font-bold">{titulo}</h3>
-          <p className="text-[11px] text-white/25">{descricao}</p>
+          <p className="truncate text-[11px] text-white/25">{descricao}</p>
         </div>
-      </div>
-      <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-5 space-y-4">
-        {children}
-      </div>
+        <motion.span
+          animate={{ rotate: aberta ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="text-white/30"
+        >
+          <ChevronDown size={17} />
+        </motion.span>
+      </button>
+      <AnimatePresence initial={false}>
+        {aberta && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <div className="space-y-4 border-t border-white/5 p-5">{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   );
 }

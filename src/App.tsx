@@ -33,6 +33,7 @@ import SocialSidebar from "./components/SocialSidebar";
 import { EsqueletoAba } from "./components/EsqueletoCarregamento";
 import VisualizacaoInstanciaSocial from "./components/VisualizacaoInstanciaSocial";
 import type { AmigoSocial } from "./components/social/tiposSocial";
+import { aplicarCorDestaque, normalizarCorDestaque } from "./lib/corDestaque";
 
 const carregarSkinManager = () =>
   import("./components/SkinManager").then((modulo) => ({ default: modulo.SkinManager }));
@@ -143,16 +144,6 @@ const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
 const INTERVALO_VERIFICACAO_INSTANCIAS_MS = 20 * 1000;
 type TipoExplorePresence = "modpack" | "mod" | "resourcepack" | "shader";
 type FonteExplorePresence = "modrinth" | "curseforge";
-type CorDestaque = "verde" | "azul" | "laranja" | "rosa" | "ciano";
-
-function normalizarCorDestaque(valor: unknown): CorDestaque {
-  const texto = String(valor || "").toLowerCase().trim();
-  if (texto === "azul" || texto === "laranja" || texto === "rosa" || texto === "ciano") {
-    return texto;
-  }
-  return "verde";
-}
-
 const TITULOS_ABA: Record<string, string> = {
   home: "Início",
   instances: "Biblioteca",
@@ -167,9 +158,6 @@ const TITULOS_ABA: Record<string, string> = {
 export default function App() {
   const { instances, launch, launchServer, remove, fetchInstances } = useLauncher();
   const [activeTab, setActiveTab] = useState("home");
-  const navegarParaAba = useCallback((aba: string) => {
-    startTransition(() => setActiveTab(aba));
-  }, []);
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -195,15 +183,19 @@ export default function App() {
   const [projetoDetalhe, setProjetoDetalhe] = useState<ProjetoConteudo | null>(null);
   const [atividadeSocialDetalhe, setAtividadeSocialDetalhe] = useState<AmigoSocial | null>(null);
   const [abaOrigemProjeto, setAbaOrigemProjeto] = useState<AbaOrigemProjeto>("home");
-  const [corDestaque, setCorDestaque] = useState<CorDestaque>("verde");
+  const [corDestaque, setCorDestaque] = useState("#10B981");
   const [contasMinecraft, setContasMinecraft] = useState<MinecraftAccount[]>([]);
   const [carregandoContasMinecraft, setCarregandoContasMinecraft] = useState(false);
   const [menuContaAberto, setMenuContaAberto] = useState(false);
   const [socialDrawerAberto, setSocialDrawerAberto] = useState(false);
   const [chatSocialAberto, setChatSocialAberto] = useState(false);
+  const [painelSocialRecuado, setPainelSocialRecuado] = useState(true);
   const ehTelaXl = useBreakpointXl();
   const ultimaAssinaturaPresence = useRef<string>("");
   const menuContaRef = useRef<HTMLDivElement | null>(null);
+  const navegarParaAba = useCallback((aba: string) => {
+    startTransition(() => setActiveTab(aba));
+  }, []);
 
   useEffect(() => {
     if (activeTab === "instances") {
@@ -302,23 +294,12 @@ export default function App() {
   }, [atualizarSessaoMinecraft]);
 
   useEffect(() => {
-    const impedirMenuContextoNativo = (evento: MouseEvent) => {
-      evento.preventDefault();
-    };
-
-    document.addEventListener("contextmenu", impedirMenuContextoNativo);
-    return () => {
-      document.removeEventListener("contextmenu", impedirMenuContextoNativo);
-    };
-  }, []);
-
-  useEffect(() => {
     const carregarCorDestaque = async () => {
       try {
         const configuracoes = await invoke<{ cor_destaque?: string }>("get_settings");
         setCorDestaque(normalizarCorDestaque(configuracoes?.cor_destaque));
       } catch {
-        setCorDestaque("verde");
+        setCorDestaque("#10B981");
       }
     };
 
@@ -335,7 +316,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.setAttribute("data-cor-destaque", corDestaque);
+    aplicarCorDestaque(corDestaque);
   }, [corDestaque]);
 
   useEffect(() => {
@@ -368,8 +349,13 @@ export default function App() {
   }, [menuContaAberto]);
 
   useEffect(() => {
-    if (instances.length > 0 && !selectedInstance) {
-      setSelectedInstance(instances[0]);
+    const instanciaAtualizada = selectedInstance
+      ? instances.find((instancia) => instancia.id === selectedInstance.id)
+      : null;
+    const proximaInstancia = instanciaAtualizada ?? instances[0] ?? null;
+
+    if (proximaInstancia !== selectedInstance) {
+      setSelectedInstance(proximaInstancia);
     }
   }, [instances, selectedInstance]);
 
@@ -839,7 +825,7 @@ export default function App() {
     { id: "favorites", icon: Heart, label: "Favoritos" },
     { id: "skins", icon: Avatar, label: "Skins" },
   ];
-  const ocultarTopbar = activeTab === "instance-manager" || activeTab === "skins";
+  const ocultarTopbar = activeTab === "instance-manager";
 
   return (
     <div className="app-shell launcher-shell relative flex h-screen w-full overflow-hidden text-white">
@@ -1093,6 +1079,11 @@ export default function App() {
               <h2 className="font-['MinecraftTen','Sora',sans-serif] text-[20px] tracking-[0.4px] text-white">
                 {TITULOS_ABA[activeTab] ?? ""}
               </h2>
+              {activeTab === "skins" && (
+                <span className="border border-emerald-400/25 bg-emerald-400/[0.08] px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.16em] text-emerald-300">
+                  Beta
+                </span>
+              )}
 
             </div>
 
@@ -1106,7 +1097,6 @@ export default function App() {
                   Social
                 </button>
               )}
-              <div className="h-[20px] w-[144px]" />
             </div>
           </header>
         )}
@@ -1224,8 +1214,12 @@ export default function App() {
                 <ProjetoDetalheModal
                   projeto={projetoDetalhe}
                   instancias={instances}
+                  instanciaInicialId={
+                    abaOrigemProjeto === "instance-manager" ? managedInstanceId : undefined
+                  }
                   usuarioLogado={Boolean(user)}
                   onSolicitarLogin={() => setIsLoginOpen(true)}
+                  onInstanciaCriada={() => void fetchInstances()}
                   rotuloAcao={abaOrigemProjeto === "instances" ? "Baixar" : "Instalar"}
                   onVoltar={() => {
                     navegarParaAba(abaOrigemProjeto);
@@ -1270,6 +1264,7 @@ export default function App() {
                   instancias={instances}
                   usuarioLogado={Boolean(user)}
                   onSolicitarLogin={() => setIsLoginOpen(true)}
+                  onInstanciaCriada={() => void fetchInstances()}
                   rotuloAcao="Baixar"
                   onVoltar={() => {
                     setProjetoDetalhe(null);
@@ -1317,6 +1312,7 @@ export default function App() {
                   instanceId={managedInstanceId}
                   onBack={() => navegarParaAba("instances")}
                   onAbrirSocial={() => setSocialDrawerAberto(true)}
+                  onAbrirProjeto={(projeto) => abrirProjeto("instance-manager", projeto)}
                   onInstanceUpdate={(novoId) => {
                     if (novoId) setManagedInstanceId(novoId);
                     void fetchInstances();
@@ -1338,7 +1334,8 @@ export default function App() {
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: 80, opacity: 0 }}
               className={cn(
-                "pointer-events-none absolute bottom-0 left-0 right-0 p-6 transition-[padding]",
+                "absolute bottom-0 left-0 right-0 p-6 transition-[padding]",
+                activeTab === "instances" ? "pointer-events-auto" : "pointer-events-none",
                 ehTelaXl && chatSocialAberto && "pr-[384px]"
               )}
             >
@@ -1398,7 +1395,10 @@ export default function App() {
         <div
           className={cn(
             ehTelaXl
-              ? "relative flex w-[340px] shrink-0"
+              ? cn(
+                  "relative flex shrink-0 transition-[width] duration-200",
+                  painelSocialRecuado ? "w-[72px]" : "w-[340px]"
+                )
               : cn(
                   "fixed inset-0 z-[80] transition-colors duration-200 xl:hidden",
                   socialDrawerAberto
@@ -1425,7 +1425,9 @@ export default function App() {
               usuarioMinecraft={user}
               iconeAtividadeLocal={instanciaAtiva?.icon}
               className={cn(
-                "flex h-full w-[340px] shrink-0 overflow-y-auto scrollbar-hide",
+                "flex h-full shrink-0 overflow-y-auto scrollbar-hide",
+                ehTelaXl && (painelSocialRecuado ? "w-[72px]" : "w-[340px]"),
+                !ehTelaXl && "w-[340px]",
                 !ehTelaXl && "max-w-[92vw]"
               )}
               onFecharDrawer={
@@ -1433,6 +1435,10 @@ export default function App() {
               }
               onAlterarChatAberto={setChatSocialAberto}
               onAbrirAtividadeAmigo={abrirAtividadeAmigo}
+              recuado={ehTelaXl && painelSocialRecuado}
+              onAlternarRecuo={
+                ehTelaXl ? () => setPainelSocialRecuado((anterior) => !anterior) : undefined
+              }
             />
           </div>
         </div>
@@ -1448,7 +1454,11 @@ export default function App() {
           atualizarSessaoMinecraft();
         }}
       />
-      <CreateInstanceModal isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} />
+      <CreateInstanceModal
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        onCreated={() => void fetchInstances()}
+      />
       <CreatingInstancesOverlay />
       </div>
   );

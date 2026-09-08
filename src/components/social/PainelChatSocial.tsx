@@ -4,10 +4,12 @@ import { MoreVertical, Play, Trash2, X } from '../../iconesPixelados';
 import { cn } from '../../lib/utils';
 import type { AmigoSocial, MensagemChatApi, StatusPresenca } from './tiposSocial';
 import { ImagemAtividade } from './ImagemAtividade';
+import { IndicadorStatusSocial } from './IndicadorStatusSocial';
 
 interface PainelChatSocialProps {
   aberto: boolean;
   compacto?: boolean;
+  recuado?: boolean;
   amigoSelecionado: AmigoSocial | null;
   perfilIdAtual?: string;
   mensagens: MensagemChatApi[];
@@ -34,15 +36,10 @@ interface PainelChatSocialProps {
   rotuloStatus: (status?: StatusPresenca) => string;
 }
 
-function classeStatus(status?: StatusPresenca): string {
-  if (status === 'ausente') return 'bg-amber-400';
-  if (status === 'offline') return 'bg-white/25';
-  return 'bg-emerald-400';
-}
-
 export function PainelChatSocial({
   aberto,
   compacto = false,
+  recuado = false,
   amigoSelecionado,
   perfilIdAtual,
   mensagens,
@@ -106,7 +103,7 @@ export function PainelChatSocial({
             'fixed bottom-0 z-[70] flex h-[clamp(380px,70vh,600px)] max-h-full',
             'w-[360px] max-w-full flex-col border-x border-t border-white/10',
             'bg-[#101011] shadow-[-18px_0_45px_rgba(0,0,0,0.38)]',
-            compacto ? 'right-0' : 'right-[340px]'
+            compacto ? 'right-0' : recuado ? 'right-[72px]' : 'right-[340px]'
           )}
         >
           <header className="relative flex h-14 shrink-0 items-center gap-2.5 border-b border-white/8 px-3">
@@ -123,12 +120,12 @@ export function PainelChatSocial({
               ) : (
                 amigoSelecionado.nome.slice(0, 2).toUpperCase()
               )}
-              <span
-                className={cn(
-                  'absolute -bottom-0.5 -right-0.5 h-2 w-2 border-2 border-[#101011]',
-                  classeStatus(amigoSelecionado.status)
-                )}
-              />
+              <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#101011]">
+                <IndicadorStatusSocial
+                  status={amigoSelecionado.status ?? 'offline'}
+                  className="h-2.5 w-2.5"
+                />
+              </span>
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-bold text-white/90">{amigoSelecionado.nome}</p>

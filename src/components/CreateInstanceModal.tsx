@@ -1,8 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronDown, Pencil } from "../iconesPixelados";
+import { X, ChevronDown, Pencil, Search } from "../iconesPixelados";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "../lib/utils";
+import {
+  EXTENSOES_IMAGEM_INSTANCIA,
+  prepararIconeInstancia,
+} from "../lib/iconeInstancia";
 import {
   addCreatingInstance,
   updateCreatingInstance,
@@ -14,6 +18,7 @@ import {
 interface CreateInstanceModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onCreated?: () => void;
 }
 
 const LOADERS = [
@@ -23,7 +28,11 @@ const LOADERS = [
   { id: "vanilla", name: "Vanilla" },
 ];
 
-export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceModalProps) {
+export default function CreateInstanceModal({
+  isOpen,
+  onClose,
+  onCreated,
+}: CreateInstanceModalProps) {
   const [name, setName] = useState("");
   const [version, setVersion] = useState("");
   const [loader, setLoader] = useState("forge");
@@ -35,6 +44,11 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
   const [loadingLoaderVersions, setLoadingLoaderVersions] = useState(false);
   const [isVersionOpen, setIsVersionOpen] = useState(false);
   const [isLoaderVersionOpen, setIsLoaderVersionOpen] = useState(false);
+  const [versionSearch, setVersionSearch] = useState("");
+  const [versionSearchChanged, setVersionSearchChanged] = useState(false);
+  const [customIcon, setCustomIcon] = useState<string | null>(null);
+  const versionInputRef = useRef<HTMLInputElement>(null);
+  const iconInputRef = useRef<HTMLInputElement>(null);
 
   // Carregar versões do Minecraft
   useEffect(() => {
@@ -54,7 +68,10 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
             (v: any) => v.type === "release" || (snapshotsAtivados && v.type === "snapshot")
           );
           setVersions(filtradas);
-          if (filtradas.length > 0) setVersion(filtradas[0].id);
+          if (filtradas.length > 0) {
+            setVersion(filtradas[0].id);
+            setVersionSearch(filtradas[0].id);
+          }
         } catch (error) {
           console.error("Erro ao carregar versões:", error);
         } finally {
@@ -67,26 +84,41 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
 
   // Carregar versões do loader
   useEffect(() => {
+    let cancelado = false;
+
     if (loader !== "vanilla" && version) {
       const fetchLoaderVersions = async () => {
         setLoadingLoaderVersions(true);
+        setLoaderVersions([]);
+        setLoaderVersion("");
+        setIsLoaderVersionOpen(false);
         try {
-          const res: any = await invoke("get_loader_versions", { loaderType: loader });
+          const res: any = await invoke("get_loader_versions", {
+            loaderType: loader,
+            minecraftVersion: version,
+          });
           const vers = res.versions.map((v: any) => v.version);
+          if (cancelado) return;
           setLoaderVersions(vers);
           if (vers.length > 0) setLoaderVersion(vers[0]);
         } catch (error) {
+          if (cancelado) return;
           console.error("Erro ao carregar versões do loader:", error);
           setLoaderVersions([]);
         } finally {
-          setLoadingLoaderVersions(false);
+          if (!cancelado) setLoadingLoaderVersions(false);
         }
       };
-      fetchLoaderVersions();
+      void fetchLoaderVersions();
     } else {
       setLoaderVersions([]);
       setLoaderVersion("");
+      setLoadingLoaderVersions(false);
     }
+
+    return () => {
+      cancelado = true;
+    };
   }, [loader, version]);
 
   // Reset ao abrir
@@ -94,13 +126,87 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
     if (isOpen) {
       setName("");
       setLoader("forge");
+      setIsVersionOpen(false);
+      setVersionSearchChanged(false);
+      setCustomIcon(null);
     }
   }, [isOpen]);
+
+  const filteredVersions = useMemo(() => {
+    if (!versionSearchChanged) return versions;
+
+    const query = versionSearch.trim().toLocaleLowerCase("pt-BR");
+    if (!query) return versions;
+
+    return versions.filter((item) => item.id.toLocaleLowerCase("pt-BR").includes(query));
+  }, [versionSearch, versionSearchChanged, versions]);
+  const isVersionSelectionValid = !versionSearchChanged
+    || versionSearch.trim().toLocaleLowerCase("pt-BR") === version.toLocaleLowerCase("pt-BR");
+
+  const selectVersion = (selectedVersion: string) => {
+    setVersion(selectedVersion);
+    setVersionSearch(selectedVersion);
+    setVersionSearchChanged(false);
+    setIsVersionOpen(false);
+  };
+
+  const openVersionSearch = () => {
+    setVersionSearch("");
+    setVersionSearchChanged(true);
+    setIsVersionOpen(true);
+  };
+
+  const closeVersionSearch = () => {
+    setVersionSearch(version);
+    setVersionSearchChanged(false);
+    setIsVersionOpen(false);
+  };
+
+  const handleVersionSearchChange = (value: string) => {
+    setVersionSearch(value);
+    setVersionSearchChanged(true);
+    setIsVersionOpen(true);
+
+    const exactVersion = versions.find(
+      (item) => item.id.toLocaleLowerCase("pt-BR") === value.trim().toLocaleLowerCase("pt-BR")
+    );
+    if (exactVersion) setVersion(exactVersion.id);
+  };
+
+  const handleVersionSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      closeVersionSearch();
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setIsVersionOpen(true);
+      return;
+    }
+
+    if (event.key === "Enter" && isVersionOpen && filteredVersions.length > 0) {
+      event.preventDefault();
+      selectVersion(filteredVersions[0].id);
+    }
+  };
+
+  const handleIconChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    try {
+      setCustomIcon(await prepararIconeInstancia(file));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Não foi possível preparar a imagem.");
+    }
+  };
 
   if (!isOpen) return null;
 
   const handleCreate = async () => {
-    if (!name.trim() || !version) return;
+    if (!name.trim() || !version || !isVersionSelectionValid) return;
 
     const instanceId = name.toLowerCase().replace(/\s+/g, "_");
 
@@ -113,7 +219,7 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
       status: "downloading",
       progress: 0,
       message: "Iniciando download...",
-      icon: `https://api.dicebear.com/9.x/shapes/svg?seed=${instanceId}`,
+      icon: customIcon || `https://api.dicebear.com/9.x/shapes/svg?seed=${instanceId}`,
     };
     addCreatingInstance(creatingInstance);
 
@@ -122,7 +228,7 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
 
     // Criar em background
     try {
-      const params: any = { name, version, mcType: loader };
+      const params: any = { name, version, mcType: loader, icon: customIcon };
       if (loader !== "vanilla") {
         params.loaderType = loader;
         params.loaderVersion = loaderVersion;
@@ -136,8 +242,7 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
 
       await invoke("create_instance", params);
       completeCreatingInstance(instanceId);
-
-      setTimeout(() => window.location.reload(), 1000);
+      onCreated?.();
     } catch (error) {
       console.error("Erro ao criar instância:", error);
       errorCreatingInstance(instanceId, `Falha: ${error}`);
@@ -176,14 +281,27 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
           {/* Icon + Name */}
           <div className="flex gap-4">
             <div className="relative group">
+              <input
+                ref={iconInputRef}
+                type="file"
+                accept={EXTENSOES_IMAGEM_INSTANCIA}
+                onChange={(event) => void handleIconChange(event)}
+                className="hidden"
+              />
               <div className="w-16 h-16 rounded-xl bg-linear-to-br from-emerald-500/20 to-orange-500/20 border border-white/10 overflow-hidden">
                 <img
-                  src={`https://api.dicebear.com/9.x/shapes/svg?seed=${name || "default"}`}
+                  src={customIcon || `https://api.dicebear.com/9.x/shapes/svg?seed=${name || "default"}`}
                   alt=""
                   className="w-full h-full object-cover"
                 />
               </div>
-              <button className="absolute -bottom-1 -right-1 w-6 h-6 bg-white/10 rounded-full flex items-center justify-center hover:bg-white/20 transition-colors">
+              <button
+                type="button"
+                onClick={() => iconInputRef.current?.click()}
+                aria-label="Alterar imagem da instância"
+                title="Alterar imagem"
+                className="absolute -bottom-1 -right-1 w-6 h-6 bg-white/10 rounded-full flex items-center justify-center hover:bg-white/20 transition-colors"
+              >
                 <Pencil size={12} className="text-white/60" />
               </button>
             </div>
@@ -211,29 +329,69 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
               )}
             </label>
             <div className="relative">
-              <button
-                onClick={() => setIsVersionOpen(!isVersionOpen)}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2.5 text-sm text-left flex items-center justify-between hover:bg-white/10 transition-colors"
-              >
-                <span>{loadingVersions ? "Carregando..." : version}</span>
-                <ChevronDown size={16} className={cn("text-white/40 transition-transform", isVersionOpen && "rotate-180")} />
-              </button>
+              <div className="flex items-center rounded-lg border border-white/10 bg-white/5 transition-colors hover:bg-white/10 focus-within:border-[color:var(--cor-acento-500)]">
+                <Search size={15} className="ml-3 shrink-0 text-white/35" />
+                <input
+                  ref={versionInputRef}
+                  type="text"
+                  role="combobox"
+                  aria-label="Pesquisar versão do Minecraft"
+                  aria-expanded={isVersionOpen}
+                  aria-controls="minecraft-version-options"
+                  aria-autocomplete="list"
+                  autoComplete="off"
+                  disabled={loadingVersions}
+                  value={loadingVersions ? "Carregando..." : versionSearch}
+                  onFocus={openVersionSearch}
+                  onClick={() => {
+                    if (!isVersionOpen) openVersionSearch();
+                  }}
+                  onChange={(event) => handleVersionSearchChange(event.target.value)}
+                  onKeyDown={handleVersionSearchKeyDown}
+                  onBlur={closeVersionSearch}
+                  className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-sm outline-none disabled:cursor-wait"
+                  placeholder="Pesquisar versão..."
+                />
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    if (isVersionOpen) {
+                      closeVersionSearch();
+                      return;
+                    }
+                    versionInputRef.current?.focus();
+                    openVersionSearch();
+                  }}
+                  disabled={loadingVersions}
+                  aria-label={isVersionOpen ? "Fechar lista de versões" : "Abrir lista de versões"}
+                  className="self-stretch px-3 text-white/40 transition-colors hover:text-white/70 disabled:cursor-wait"
+                >
+                  <ChevronDown
+                    size={16}
+                    className={cn("transition-transform", isVersionOpen && "rotate-180")}
+                  />
+                </button>
+              </div>
 
               <AnimatePresence>
                 {isVersionOpen && (
                   <motion.div
+                    id="minecraft-version-options"
+                    role="listbox"
                     initial={{ opacity: 0, y: -10 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
                     className="absolute z-10 top-full left-0 right-0 mt-1 bg-[#222224] border border-white/10 rounded-lg max-h-48 overflow-y-auto"
                   >
-                    {versions.map((v) => (
+                    {filteredVersions.map((v) => (
                       <button
                         key={v.id}
-                        onClick={() => {
-                          setVersion(v.id);
-                          setIsVersionOpen(false);
-                        }}
+                        type="button"
+                        role="option"
+                        aria-selected={version === v.id}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => selectVersion(v.id)}
                         className={cn(
                           "w-full px-3 py-2 text-sm text-left hover:bg-white/10 transition-colors",
                           version === v.id && "bg-emerald-500/20 text-emerald-400"
@@ -242,6 +400,11 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
                         {v.id}
                       </button>
                     ))}
+                    {filteredVersions.length === 0 && (
+                      <p className="px-3 py-4 text-center text-xs text-white/40">
+                        Nenhuma versão encontrada para “{versionSearch.trim()}”.
+                      </p>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -336,7 +499,13 @@ export default function CreateInstanceModal({ isOpen, onClose }: CreateInstanceM
           </button>
           <button
             onClick={handleCreate}
-            disabled={!name.trim() || !version}
+            disabled={
+              !name.trim() ||
+              !version ||
+              !isVersionSelectionValid ||
+              loadingLoaderVersions ||
+              (loader !== "vanilla" && !loaderVersion)
+            }
             className="px-5 py-2 rounded-lg text-sm font-bold bg-emerald-500 hover:bg-emerald-400 text-black transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Create

@@ -853,7 +853,7 @@ pub async fn export_launcher_social_sync_package(
     let instance_id = instance_id.trim().to_string();
 
     // Captura apenas o path necessário para evitar mover o state inteiro
-    let instances_path = state.instances_path.clone();
+    let instances_path = state.caminho_instancias()?;
     let account = state.account.clone();
     let accounts = state.accounts.clone();
     let processos = state.processos_instancias.clone();
@@ -863,7 +863,7 @@ pub async fn export_launcher_social_sync_package(
         let state_local = LauncherState {
             account,
             accounts,
-            instances_path,
+            instances_path: std::sync::Arc::new(std::sync::Mutex::new(instances_path)),
             processos_instancias: processos,
         };
         crate::aplicacao::importacao_exportacao::exportar_instancia_social_sem_saves(

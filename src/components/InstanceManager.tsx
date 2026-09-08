@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Play,
-  Settings,
   ArrowLeft,
   Search,
   Plus,
@@ -28,11 +27,26 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "../lib/utils";
+import { ICONE_DOME_LAUNCHER } from "../lib/imagemProjeto";
+import {
+  EXTENSOES_IMAGEM_INSTANCIA,
+  prepararIconeInstancia,
+} from "../lib/iconeInstancia";
+import Configuracao from "../pages/instance/Configuracao";
+import type { ProjetoConteudo } from "./ProjetoDetalheModal";
+import {
+  CabecalhoMenuContextual,
+  ItemMenuContextual,
+  MenuContextual,
+  SeparadorMenuContextual,
+} from "./context-menu/MenuContextual";
+import { AreaRolagemPersonalizada } from "./scroll/AreaRolagemPersonalizada";
 
 interface InstanceManagerProps {
   instanceId: string;
   onBack: () => void;
   onAbrirSocial?: () => void;
+  onAbrirProjeto?: (projeto: ProjetoConteudo) => void;
   onInstanceUpdate?: (novoId?: string) => void;
 }
 
@@ -50,6 +64,7 @@ interface InstanceDetails {
   created?: string;
   javaArgs?: string;
   mcArgs?: string;
+  memory?: number | null;
   width?: number;
   height?: number;
 }
@@ -69,6 +84,48 @@ interface InstalledMod {
   updateFileName?: string;
   updateDownloadUrl?: string;
   updating?: boolean;
+}
+
+interface ArquivoVersaoConteudo {
+  url: string;
+  filename: string;
+  primary?: boolean;
+}
+
+interface VersaoConteudo {
+  id: string;
+  version_number: string;
+  version_type?: string;
+  game_versions: string[];
+  loaders: string[];
+  date_published?: string;
+  files: ArquivoVersaoConteudo[];
+}
+
+type EstabilidadeVersao = "release" | "beta" | "alpha";
+
+const ROTULOS_ESTABILIDADE: Record<EstabilidadeVersao, string> = {
+  release: "Estável",
+  beta: "Beta",
+  alpha: "Alpha",
+};
+
+const CLASSES_ESTABILIDADE: Record<EstabilidadeVersao, string> = {
+  release: "border-emerald-400/20 bg-emerald-400/8 text-emerald-300",
+  beta: "border-amber-400/20 bg-amber-400/8 text-amber-300",
+  alpha: "border-red-400/20 bg-red-400/8 text-red-300",
+};
+
+function obterEstabilidadeVersao(versao: VersaoConteudo): EstabilidadeVersao {
+  const tipoOficial = versao.version_type?.trim().toLowerCase();
+  if (tipoOficial === "alpha" || tipoOficial === "beta" || tipoOficial === "release") {
+    return tipoOficial;
+  }
+
+  const identificador = `${versao.version_number} ${versao.files.map((arquivo) => arquivo.filename).join(" ")}`;
+  if (/\b(alpha|snapshot|nightly|dev)\b/i.test(identificador)) return "alpha";
+  if (/\b(beta|pre|preview|rc)\b/i.test(identificador)) return "beta";
+  return "release";
 }
 
 interface ConteudoInstaladoDetalhado {
@@ -113,7 +170,7 @@ interface ConfiguracoesGlobais {
   close_on_launch?: boolean;
 }
 
-type ContentTab = "content" | "worlds" | "logs";
+type ContentTab = "content" | "worlds" | "configuration" | "logs";
 type ContentFilter = "mods" | "resourcepacks" | "shaders";
 type ViewMode = "installed" | "browse";
 type BrowseSource = "modrinth" | "curseforge";
@@ -278,6 +335,7 @@ export default function InstanceManager({
   instanceId,
   onBack,
   onAbrirSocial,
+  onAbrirProjeto,
   onInstanceUpdate,
 }: InstanceManagerProps) {
   const [instanceDetails, setInstanceDetails] = useState<InstanceDetails | null>(null);
@@ -297,12 +355,24 @@ export default function InstanceManager({
   const [logs, setLogs] = useState<LogFile[]>([]);
   const [selectedLog, setSelectedLog] = useState<string | null>(null);
   const [logContent, setLogContent] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [updatingAll, setUpdatingAll] = useState(false);
   const [modoSelecaoLote, setModoSelecaoLote] = useState(false);
   const [arquivosSelecionados, setArquivosSelecionados] = useState<Set<string>>(new Set());
   const [processandoLote, setProcessandoLote] = useState(false);
+  const [menuConteudo, setMenuConteudo] = useState<{
+    item: InstalledMod;
+    filtro: ContentFilter;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [itemTrocaVersao, setItemTrocaVersao] = useState<InstalledMod | null>(null);
+  const [filtroTrocaVersao, setFiltroTrocaVersao] = useState<ContentFilter>("mods");
+  const [versoesConteudo, setVersoesConteudo] = useState<VersaoConteudo[]>([]);
+  const [versaoConteudoSelecionadaId, setVersaoConteudoSelecionadaId] = useState("");
+  const [carregandoVersoesConteudo, setCarregandoVersoesConteudo] = useState(false);
+  const [trocandoVersaoConteudo, setTrocandoVersaoConteudo] = useState(false);
+  const [erroTrocaVersao, setErroTrocaVersao] = useState<string | null>(null);
   const [indicadorRolagem, setIndicadorRolagem] = useState({
     altura: 0,
     topo: 0,
@@ -312,13 +382,12 @@ export default function InstanceManager({
   // Estados para edição
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState("");
-  const [editJavaArgs, setEditJavaArgs] = useState("");
-  const [editWidth, setEditWidth] = useState("");
-  const [editHeight, setEditHeight] = useState("");
+  const [editIcon, setEditIcon] = useState("");
   const [saving, setSaving] = useState(false);
 
   const lastSearch = useRef({ query: "", filter: "", source: "" });
   const listaConteudoRef = useRef<HTMLDivElement | null>(null);
+  const iconInputRef = useRef<HTMLInputElement | null>(null);
   const arrasteIndicadorRef = useRef<{
     ponteiroId: number;
     inicioY: number;
@@ -326,6 +395,9 @@ export default function InstanceManager({
   } | null>(null);
 
   useEffect(() => {
+    setActiveTab("content");
+    setActiveFilter("mods");
+    setViewMode("installed");
     loadInstanceDetails();
   }, [instanceId]);
 
@@ -352,7 +424,7 @@ export default function InstanceManager({
     if (viewMode === "browse") {
       searchContent(searchQuery);
     }
-  }, [viewMode, activeFilter, browseSource]);
+  }, [viewMode, activeFilter, browseSource, instanceDetails?.version, instanceDetails?.loaderType]);
 
   useEffect(() => {
     setArquivosSelecionados(new Set());
@@ -380,17 +452,18 @@ export default function InstanceManager({
       setInstanceDetails(details);
       // Preencher campos de edição
       setEditName(details.name);
-      setEditJavaArgs(details.javaArgs || "");
-      setEditWidth(details.width?.toString() || "854");
-      setEditHeight(details.height?.toString() || "480");
+      setEditIcon(details.icon || "");
     } catch (error) {
       console.error("Erro ao carregar detalhes:", error);
     }
   };
 
   // Função genérica para carregar conteúdo instalado (mods, resourcepacks, shaders)
-  const loadInstalledContent = async (contentType: ContentFilter) => {
-    setLoading(true);
+  const loadInstalledContent = async (
+    contentType: ContentFilter,
+    silencioso = false
+  ) => {
+    if (!silencioso) setLoading(true);
     try {
       const detalhes = await invoke<ConteudoInstaladoDetalhado[]>(
         "obter_conteudo_instalado_detalhado",
@@ -451,7 +524,7 @@ export default function InstanceManager({
     } catch (error) {
       console.error(`Erro ao carregar ${contentType}:`, error);
     } finally {
-      setLoading(false);
+      if (!silencioso) setLoading(false);
     }
   };
 
@@ -893,6 +966,7 @@ export default function InstanceManager({
   };
 
   const searchContent = async (query: string) => {
+    if (!instanceDetails) return;
     lastSearch.current = { query, filter: activeFilter, source: browseSource };
     setSearching(true);
     try {
@@ -903,11 +977,14 @@ export default function InstanceManager({
       };
       const plataforma = browseSource === "curseforge" ? "curseforge" : "modrinth";
       const tipoConteudo = typeMap[activeFilter];
+      const loaderInstancia = instanceDetails.loaderType?.trim().toLowerCase();
 
       const resultados: any[] = await invoke("search_mods_online", {
         query,
         platform: plataforma,
         contentType: tipoConteudo,
+        gameVersion: instanceDetails.version,
+        loader: tipoConteudo === "mod" && loaderInstancia ? loaderInstancia : null,
       });
 
       setSearchResults(
@@ -1038,6 +1115,7 @@ export default function InstanceManager({
             file_name: file.filename,
             platform: "modrinth",
             dependencies: [],
+            version_id: version.id,
           },
         });
       } else {
@@ -1235,6 +1313,7 @@ export default function InstanceManager({
         let downloadUrl = item.updateDownloadUrl;
         let fileName = item.updateFileName;
         let latestVersion = item.latestVersion;
+        let versionId: string | undefined;
 
         if (!downloadUrl || !fileName) {
           const params = new URLSearchParams();
@@ -1259,6 +1338,7 @@ export default function InstanceManager({
           downloadUrl = String(arquivoAlvo.url);
           fileName = String(arquivoAlvo.filename);
           latestVersion = String(versaoAlvo?.version_number || latestVersion || "");
+          versionId = versaoAlvo?.id ? String(versaoAlvo.id) : undefined;
         }
 
         if (tipoProjeto === "mod") {
@@ -1274,6 +1354,7 @@ export default function InstanceManager({
               file_name: fileName,
               platform: "modrinth",
               dependencies: [],
+              version_id: versionId,
             },
           });
         } else {
@@ -1320,6 +1401,127 @@ export default function InstanceManager({
       }
     } finally {
       setUpdatingAll(false);
+    }
+  };
+
+  const abrirDetalhesConteudoInstalado = (item: InstalledMod, filtro: ContentFilter) => {
+    if (!onAbrirProjeto || !item.projectId || !item.source) return;
+    onAbrirProjeto({
+      id: item.projectId,
+      title: item.name,
+      description: "",
+      icon_url: item.icon || "",
+      author: item.author,
+      slug: item.projectId,
+      source: item.source,
+      project_type: tipoProjetoPorFiltro(filtro),
+    });
+  };
+
+  const carregarVersoesConteudo = async (item: InstalledMod, filtro: ContentFilter) => {
+    if (!item.projectId || !item.source || !instanceDetails) return;
+    setCarregandoVersoesConteudo(true);
+    setErroTrocaVersao(null);
+    setVersoesConteudo([]);
+    try {
+      let versoes: VersaoConteudo[];
+      if (item.source === "curseforge") {
+        const loader = filtro === "mods"
+          ? (instanceDetails.loaderType || instanceDetails.mcType || "").toLowerCase()
+          : null;
+        versoes = await invoke<VersaoConteudo[]>("listar_versoes_projeto_curseforge", {
+          projectId: item.projectId,
+          gameVersion: instanceDetails.version,
+          loader,
+          projectType: tipoProjetoPorFiltro(filtro),
+        });
+      } else {
+        const parametros = new URLSearchParams({
+          game_versions: JSON.stringify([instanceDetails.version]),
+        });
+        if (filtro === "mods") {
+          const loader = (instanceDetails.loaderType || instanceDetails.mcType || "").toLowerCase();
+          if (["fabric", "forge", "quilt", "neoforge"].includes(loader)) {
+            parametros.set("loaders", JSON.stringify([loader]));
+          }
+        }
+        const resposta = await fetch(
+          `https://api.modrinth.com/v2/project/${item.projectId}/version?${parametros.toString()}`
+        );
+        if (!resposta.ok) throw new Error(`Modrinth respondeu com status ${resposta.status}.`);
+        versoes = await resposta.json() as VersaoConteudo[];
+      }
+
+      const compativeis = versoes.filter((versao) => versao.files?.length > 0);
+      if (compativeis.length === 0) {
+        throw new Error("Nenhuma versão compatível foi encontrada para esta instância.");
+      }
+      setVersoesConteudo(compativeis);
+      const nomeArquivoAtual = item.fileName.replace(/\.disabled$/i, "");
+      const atual = compativeis.find((versao) =>
+        versao.version_number === item.version ||
+        versao.files.some((arquivo) => arquivo.filename === nomeArquivoAtual)
+      );
+      setVersaoConteudoSelecionadaId(atual?.id || compativeis[0].id);
+    } catch (erro) {
+      setErroTrocaVersao(erro instanceof Error ? erro.message : String(erro));
+    } finally {
+      setCarregandoVersoesConteudo(false);
+    }
+  };
+
+  const abrirTrocaVersao = (item: InstalledMod, filtro: ContentFilter) => {
+    setMenuConteudo(null);
+    setItemTrocaVersao(item);
+    setFiltroTrocaVersao(filtro);
+    void carregarVersoesConteudo(item, filtro);
+  };
+
+  const trocarVersaoConteudo = async () => {
+    if (!itemTrocaVersao || !itemTrocaVersao.projectId || !itemTrocaVersao.source) return;
+    const versao = versoesConteudo.find((item) => item.id === versaoConteudoSelecionadaId);
+    const arquivo = versao?.files.find((item) => item.primary) || versao?.files[0];
+    if (!versao || !arquivo) return;
+
+    const tipoProjeto = tipoProjetoPorFiltro(filtroTrocaVersao);
+    setTrocandoVersaoConteudo(true);
+    setErroTrocaVersao(null);
+    try {
+      if (tipoProjeto === "mod") {
+        await invoke("install_mod", {
+          instanceId,
+          modInfo: {
+            id: itemTrocaVersao.projectId,
+            name: itemTrocaVersao.name,
+            description: "",
+            author: itemTrocaVersao.author,
+            version: versao.version_number,
+            download_url: arquivo.url,
+            file_name: arquivo.filename,
+            platform: itemTrocaVersao.source,
+            dependencies: [],
+            version_id: versao.id,
+          },
+        });
+      } else {
+        await invoke("install_project_file", {
+          instanceId,
+          projectType: tipoProjeto,
+          downloadUrl: arquivo.url,
+          fileName: arquivo.filename,
+        });
+      }
+
+      if (arquivo.filename !== itemTrocaVersao.fileName) {
+        await removerConteudoInstalado(itemTrocaVersao, filtroTrocaVersao);
+      }
+      await loadInstalledContent(filtroTrocaVersao);
+      setItemTrocaVersao(null);
+    } catch (erro) {
+      console.error("Erro ao trocar versão do conteúdo:", erro);
+      setErroTrocaVersao(erro instanceof Error ? erro.message : String(erro));
+    } finally {
+      setTrocandoVersaoConteudo(false);
     }
   };
 
@@ -1375,16 +1577,12 @@ export default function InstanceManager({
         });
       }
 
-      const largura = Number.parseInt(editWidth, 10);
-      const altura = Number.parseInt(editHeight, 10);
-
-      await invoke("update_instance_settings", {
-        instanceId: idAtual,
-        javaArgs: editJavaArgs,
-        mcArgs: instanceDetails.mcArgs,
-        width: Number.isFinite(largura) ? largura : undefined,
-        height: Number.isFinite(altura) ? altura : undefined,
-      });
+      if (editIcon && editIcon !== instanceDetails.icon) {
+        await invoke("update_instance_icon", {
+          instanceId: idAtual,
+          icon: editIcon,
+        });
+      }
 
       setIsEditing(false);
       if (idAtual !== instanceId) {
@@ -1399,6 +1597,49 @@ export default function InstanceManager({
       alert(`Erro ao salvar: ${error}`);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const abrirPaginaProjeto = (item: SearchResult) => {
+    if (!onAbrirProjeto) return;
+
+    onAbrirProjeto({
+      id: item.id,
+      title: item.title,
+      description: item.description,
+      icon_url: item.icon_url || "",
+      author: item.author,
+      slug: item.slug,
+      source: browseSource,
+      project_type: tipoProjetoPorFiltro(activeFilter),
+      downloads: item.downloads,
+    });
+  };
+
+  const startEditingInstance = () => {
+    if (!instanceDetails) return;
+    setEditName(instanceDetails.name);
+    setEditIcon(instanceDetails.icon || "");
+    setIsEditing(true);
+  };
+
+  const cancelEditingInstance = () => {
+    if (instanceDetails) {
+      setEditName(instanceDetails.name);
+      setEditIcon(instanceDetails.icon || "");
+    }
+    setIsEditing(false);
+  };
+
+  const handleInstanceIconChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    try {
+      setEditIcon(await prepararIconeInstancia(file));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Não foi possível preparar a imagem.");
     }
   };
 
@@ -1587,10 +1828,9 @@ export default function InstanceManager({
 
   // Ajustar filtro se necessário
   useEffect(() => {
-    if (isVanilla && activeFilter !== "resourcepacks") {
-      setActiveFilter("resourcepacks");
-    }
-  }, [isVanilla]);
+    if (!instanceDetails) return;
+    setActiveFilter(isVanilla ? "resourcepacks" : "mods");
+  }, [instanceDetails?.id, isVanilla]);
 
   if (!instanceDetails) {
     return (
@@ -1621,15 +1861,28 @@ export default function InstanceManager({
 
             {/* Ícone editável */}
             <div className="relative group">
+              <input
+                ref={iconInputRef}
+                type="file"
+                accept={EXTENSOES_IMAGEM_INSTANCIA}
+                onChange={(event) => void handleInstanceIconChange(event)}
+                className="hidden"
+              />
               <div className="w-14 h-14 rounded-xl bg-[#1a1a1c] border border-white/10 overflow-hidden flex items-center justify-center">
-                {instanceDetails.icon ? (
-                  <img src={instanceDetails.icon} alt="" className="w-full h-full object-cover" />
-                ) : (
-                  <Package size={24} className="text-white/40" />
-                )}
+                <img
+                  src={(isEditing ? editIcon : instanceDetails.icon) || ICONE_DOME_LAUNCHER}
+                  alt=""
+                  className="w-full h-full object-contain p-1"
+                />
               </div>
               {isEditing && (
-                <button className="absolute inset-0 bg-black/60 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  type="button"
+                  onClick={() => iconInputRef.current?.click()}
+                  aria-label="Alterar imagem da instância"
+                  title="Alterar imagem"
+                  className="absolute inset-0 bg-black/60 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                >
                   <Pencil size={16} className="text-white" />
                 </button>
               )}
@@ -1648,7 +1901,7 @@ export default function InstanceManager({
                 <div className="flex min-w-0 items-center gap-2">
                   <h1 className="truncate text-xl font-bold text-white">{instanceDetails.name}</h1>
                   <button 
-                    onClick={() => setIsEditing(true)}
+                    onClick={startEditingInstance}
                     className="p-1 rounded hover:bg-white/10 text-white/30 hover:text-white transition-colors"
                   >
                     <Pencil size={14} />
@@ -1685,7 +1938,7 @@ export default function InstanceManager({
             {isEditing ? (
               <>
                 <button
-                  onClick={() => setIsEditing(false)}
+                  onClick={cancelEditingInstance}
                   className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 transition-colors"
                 >
                   Cancelar
@@ -1709,70 +1962,10 @@ export default function InstanceManager({
                   Play
                 </button>
                 
-                {/* Settings Button */}
-                <div className="relative">
-                  <button 
-                    onClick={() => { setShowSettings(!showSettings); setShowMoreMenu(false); }}
-                    className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
-                  >
-                    <Settings size={18} className="text-white/60" />
-                  </button>
-                  
-                  {showSettings && (
-                    <div className="absolute right-0 top-full mt-2 w-72 bg-[#1a1a1c] border border-white/10 rounded-xl shadow-xl z-50">
-                      <div className="p-3 border-b border-white/5">
-                        <p className="text-xs text-white/40 uppercase font-bold">Configurações</p>
-                      </div>
-                      <div className="p-4 space-y-4">
-                        {/* Java Args */}
-                        <div>
-                          <label className="text-xs text-white/40 block mb-1">Java Arguments</label>
-                          <input
-                            type="text"
-                            value={editJavaArgs}
-                            onChange={(e) => setEditJavaArgs(e.target.value)}
-                            placeholder="-XX:+UseG1GC"
-                            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                          />
-                        </div>
-                        
-                        {/* Resolução */}
-                        <div>
-                          <label className="text-xs text-white/40 block mb-1">Resolução</label>
-                          <div className="flex gap-2">
-                            <input
-                              type="number"
-                              value={editWidth}
-                              onChange={(e) => setEditWidth(e.target.value)}
-                              placeholder="854"
-                              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                            />
-                            <span className="text-white/40 self-center">×</span>
-                            <input
-                              type="number"
-                              value={editHeight}
-                              onChange={(e) => setEditHeight(e.target.value)}
-                              placeholder="480"
-                              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                            />
-                          </div>
-                        </div>
-                        
-                        <button
-                          onClick={() => { saveInstanceSettings(); setShowSettings(false); }}
-                          className="w-full bg-emerald-500 hover:bg-emerald-400 text-black py-2 rounded-lg font-bold text-sm transition-all"
-                        >
-                          Salvar Configurações
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                
                 {/* More Options Button */}
                 <div className="relative">
                   <button 
-                    onClick={() => { setShowMoreMenu(!showMoreMenu); setShowSettings(false); }}
+                    onClick={() => setShowMoreMenu(!showMoreMenu)}
                     className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
                   >
                     <MoreVertical size={18} className="text-white/60" />
@@ -1782,7 +1975,7 @@ export default function InstanceManager({
                     <div className="absolute right-0 top-full mt-2 w-56 bg-[#1a1a1c] border border-white/10 rounded-xl shadow-xl z-50">
                       <div className="p-2">
                         <button 
-                          onClick={() => { setIsEditing(true); setShowMoreMenu(false); }}
+                          onClick={() => { startEditingInstance(); setShowMoreMenu(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-sm flex items-center gap-2"
                         >
                           <Pencil size={14} className="text-white/40" />
@@ -1816,7 +2009,11 @@ export default function InstanceManager({
       {/* Tabs */}
       <div className="px-6 pt-4 pb-2 border-b border-white/5">
         <div className="flex gap-1">
-          {(["content", "worlds", "logs"] as ContentTab[]).map((tab) => (
+          {(
+            isVanilla
+              ? (["content", "worlds", "logs"] as ContentTab[])
+              : (["content", "worlds", "configuration", "logs"] as ContentTab[])
+          ).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -1827,14 +2024,20 @@ export default function InstanceManager({
                   : "text-white/50 hover:text-white hover:bg-white/5"
               )}
             >
-              {tab === "content" ? "Conteúdo" : tab === "worlds" ? "Mundos" : "Logs"}
+              {tab === "content"
+                ? "Conteúdo"
+                : tab === "worlds"
+                  ? "Mundos"
+                  : tab === "configuration"
+                    ? "Configuração"
+                    : "Logs"}
             </button>
           ))}
         </div>
       </div>
 
       {/* Content Area */}
-      <div className="flex-1 overflow-hidden flex flex-col" onClick={() => { setShowSettings(false); setShowMoreMenu(false); }}>
+      <div className="flex-1 overflow-hidden flex flex-col" onClick={() => setShowMoreMenu(false)}>
         {activeTab === "content" && (
           <>
             {/* Search & Actions Bar */}
@@ -2056,6 +2259,16 @@ export default function InstanceManager({
                     {filteredContent.map((mod: InstalledMod) => (
                       <div
                         key={mod.fileName}
+                        onContextMenu={(evento) => {
+                          evento.preventDefault();
+                          evento.stopPropagation();
+                          setMenuConteudo({
+                            item: mod,
+                            filtro: activeFilter,
+                            x: evento.clientX,
+                            y: evento.clientY,
+                          });
+                        }}
                         className={cn(
                           "group grid grid-cols-[2rem_3rem_minmax(0,1fr)_3.5rem_8rem]",
                           "items-center gap-x-4 border-b border-white/5 px-6 py-3 hover:bg-white/2"
@@ -2181,30 +2394,28 @@ export default function InstanceManager({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-4">
                             <div>
-                              <h3 className="font-bold text-white group-hover:text-emerald-400 transition-colors">
+                              <button
+                                type="button"
+                                onClick={() => abrirPaginaProjeto(item)}
+                                className="cursor-pointer text-left font-bold text-white transition-colors hover:text-emerald-400"
+                              >
                                 {item.title}
-                              </h3>
+                              </button>
                               <p className="text-xs text-white/40">
                                 por {item.author} • via <span className={browseSource === "modrinth" ? "text-emerald-400" : "text-orange-400"}>{browseSource}</span>
                               </p>
                             </div>
 
-                            {(() => {
-                              const isInstalled = projetoJaInstalado(item);
-                              
-                              if (isInstalled) {
-                                return (
-                                  <button
-                                    disabled
-                                    className="px-4 py-2 rounded-xl text-sm font-bold bg-white/10 text-white/50 flex items-center gap-2 shrink-0 cursor-not-allowed"
-                                  >
-                                    <Download size={14} />
-                                    Instalado
-                                  </button>
-                                );
-                              }
-                              
-                              return (
+                            <div className="flex shrink-0 items-center gap-2">
+                              {projetoJaInstalado(item) ? (
+                                <button
+                                  disabled
+                                  className="flex shrink-0 cursor-not-allowed items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-white/50"
+                                >
+                                  <Download size={14} />
+                                  Instalado
+                                </button>
+                              ) : (
                                 <button
                                   onClick={() => installContent(item)}
                                   disabled={installing === item.id}
@@ -2227,8 +2438,8 @@ export default function InstanceManager({
                                     </>
                                   )}
                                 </button>
-                              );
-                            })()}
+                              )}
+                            </div>
                           </div>
 
                           <p className="text-sm text-white/50 line-clamp-2 mt-2">
@@ -2347,6 +2558,17 @@ export default function InstanceManager({
           </div>
         )}
 
+        {activeTab === "configuration" && instanceDetails && (
+          <Configuracao
+            instanceId={instanceId}
+            memoriaPersonalizada={instanceDetails.memory}
+            argumentosJvm={instanceDetails.javaArgs}
+            largura={instanceDetails.width}
+            altura={instanceDetails.height}
+            onSalvar={loadInstanceDetails}
+          />
+        )}
+
         {/* LOGS TAB */}
         {activeTab === "logs" && (
           <div className="flex-1 overflow-hidden flex">
@@ -2414,6 +2636,226 @@ export default function InstanceManager({
           </div>
         )}
       </div>
+
+      <MenuContextual
+        aberto={menuConteudo !== null}
+        x={menuConteudo?.x ?? 0}
+        y={menuConteudo?.y ?? 0}
+        onFechar={() => setMenuConteudo(null)}
+        rotulo="Ações do conteúdo instalado"
+      >
+        {menuConteudo && (
+          <>
+            <CabecalhoMenuContextual
+              titulo={menuConteudo.item.name}
+              subtitulo={`${menuConteudo.item.version || "Versão desconhecida"} · ${menuConteudo.item.fileName}`}
+            />
+            <ItemMenuContextual
+              icone={<Package size={13} />}
+              disabled={!menuConteudo.item.projectId || !menuConteudo.item.source || !onAbrirProjeto}
+              onClick={() => {
+                abrirDetalhesConteudoInstalado(menuConteudo.item, menuConteudo.filtro);
+                setMenuConteudo(null);
+              }}
+            >
+              Ver detalhes do projeto
+            </ItemMenuContextual>
+            <ItemMenuContextual
+              icone={<RefreshCw size={13} />}
+              disabled={!menuConteudo.item.projectId || !menuConteudo.item.source}
+              onClick={() => abrirTrocaVersao(menuConteudo.item, menuConteudo.filtro)}
+            >
+              Trocar versão
+            </ItemMenuContextual>
+            {menuConteudo.item.updateAvailable && (
+              <ItemMenuContextual icone={<Download size={13} />} destaque onClick={() => {
+                const { item, filtro } = menuConteudo;
+                setMenuConteudo(null);
+                void atualizarItemInstalado(item, filtro);
+              }}>
+                Atualizar para a mais recente
+              </ItemMenuContextual>
+            )}
+            <ItemMenuContextual icone={<MoreVertical size={13} />} onClick={() => {
+              const item = menuConteudo.item;
+              setMenuConteudo(null);
+              void toggleMod(item);
+            }}>
+              {menuConteudo.item.enabled ? "Desativar" : "Ativar"}
+            </ItemMenuContextual>
+            <ItemMenuContextual icone={<Plus size={13} />} onClick={() => {
+              alternarSelecaoArquivo(menuConteudo.item.fileName);
+              setMenuConteudo(null);
+            }}>
+              {arquivosSelecionados.has(menuConteudo.item.fileName) ? "Remover da seleção" : "Selecionar"}
+            </ItemMenuContextual>
+            <SeparadorMenuContextual />
+            <ItemMenuContextual icone={<Trash2 size={13} />} perigo onClick={() => {
+              const item = menuConteudo.item;
+              setMenuConteudo(null);
+              void deleteMod(item);
+            }}>
+              Remover conteúdo
+            </ItemMenuContextual>
+          </>
+        )}
+      </MenuContextual>
+
+      {itemTrocaVersao && (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-black/75 p-5 backdrop-blur-sm"
+          onMouseDown={() => {
+            if (!trocandoVersaoConteudo) setItemTrocaVersao(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-trocar-versao"
+            className="isolate flex max-h-[78vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-white/15 bg-[#151516] shadow-2xl"
+            onMouseDown={(evento) => evento.stopPropagation()}
+          >
+            <div className="relative z-10 flex shrink-0 items-start justify-between gap-4 border-b border-white/8 bg-[#151516] px-5 py-4">
+              <div className="min-w-0">
+                <h3 id="titulo-trocar-versao" className="truncate text-base font-black text-white">
+                  Trocar versão de {itemTrocaVersao.name}
+                </h3>
+                <p className="mt-1 text-xs text-white/40">
+                  Somente versões compatíveis com Minecraft {instanceDetails?.version} são exibidas.
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5" aria-label="Tipos de versão">
+                  {(["release", "beta", "alpha"] as EstabilidadeVersao[]).map((tipo) => (
+                    <span
+                      key={tipo}
+                      className={cn(
+                        "border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide",
+                        CLASSES_ESTABILIDADE[tipo]
+                      )}
+                    >
+                      {ROTULOS_ESTABILIDADE[tipo]}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Fechar"
+                disabled={trocandoVersaoConteudo}
+                onClick={() => setItemTrocaVersao(null)}
+                className="rounded-lg p-2 text-white/35 transition-colors hover:bg-white/8 hover:text-white disabled:opacity-30"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <AreaRolagemPersonalizada
+              className="flex-1"
+              classNameConteudo="p-3 pb-5"
+              rotulo="Lista de versões disponíveis"
+            >
+              {carregandoVersoesConteudo ? (
+                <div className="flex items-center justify-center gap-2 py-14 text-xs text-white/45">
+                  <Loader2 size={16} className="animate-spin text-emerald-300" />
+                  Buscando versões compatíveis...
+                </div>
+              ) : erroTrocaVersao && versoesConteudo.length === 0 ? (
+                <div className="border border-red-400/15 bg-red-400/5 px-4 py-3 text-xs text-red-200/80">
+                  {erroTrocaVersao}
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {versoesConteudo.map((versao, indice) => {
+                    const arquivo = versao.files.find((item) => item.primary) || versao.files[0];
+                    const nomeAtual = itemTrocaVersao.fileName.replace(/\.disabled$/i, "");
+                    const atual = versao.version_number === itemTrocaVersao.version || arquivo?.filename === nomeAtual;
+                    const estabilidade = obterEstabilidadeVersao(versao);
+                    return (
+                      <label
+                        key={versao.id}
+                        className={cn(
+                          "flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-3 transition-colors",
+                          versaoConteudoSelecionadaId === versao.id
+                            ? "border-emerald-400/35 bg-emerald-400/8"
+                            : "border-white/6 bg-white/[0.02] hover:bg-white/[0.05]"
+                        )}
+                      >
+                        <input
+                          type="radio"
+                          name="versao-conteudo"
+                          value={versao.id}
+                          checked={versaoConteudoSelecionadaId === versao.id}
+                          onChange={() => setVersaoConteudoSelecionadaId(versao.id)}
+                          className="accent-emerald-400"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-bold text-white">{versao.version_number}</span>
+                            <span
+                              className={cn(
+                                "shrink-0 border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide",
+                                CLASSES_ESTABILIDADE[estabilidade]
+                              )}
+                            >
+                              {ROTULOS_ESTABILIDADE[estabilidade]}
+                            </span>
+                            {indice === 0 && (
+                              <span className="shrink-0 bg-emerald-400/10 px-1.5 py-0.5 text-[8px] font-black uppercase text-emerald-300">
+                                Mais recente
+                              </span>
+                            )}
+                            {atual && (
+                              <span className="shrink-0 bg-white/8 px-1.5 py-0.5 text-[8px] font-black uppercase text-white/50">
+                                Atual
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 truncate text-[10px] text-white/35">
+                            {arquivo?.filename}
+                            {versao.date_published
+                              ? ` · ${new Date(versao.date_published).toLocaleDateString("pt-BR")}`
+                              : ""}
+                          </p>
+                        </div>
+                        <span className="shrink-0 text-[9px] font-semibold uppercase text-white/25">
+                          {versao.loaders?.join(", ") || tipoProjetoPorFiltro(filtroTrocaVersao)}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {erroTrocaVersao && versoesConteudo.length > 0 && (
+                <p className="mt-3 text-xs text-red-300/80">{erroTrocaVersao}</p>
+              )}
+            </AreaRolagemPersonalizada>
+
+            <div className="relative z-10 grid shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-t border-white/8 bg-[#151516] px-5 py-3 shadow-[0_-10px_24px_rgba(0,0,0,0.28)]">
+              <p className="max-w-64 text-[10px] leading-relaxed text-white/30">
+                O arquivo atual só é removido após a nova versão ser instalada.
+              </p>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  disabled={trocandoVersaoConteudo}
+                  onClick={() => setItemTrocaVersao(null)}
+                  className="px-3 py-2 text-xs font-bold text-white/45 hover:text-white disabled:opacity-30"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={carregandoVersoesConteudo || trocandoVersaoConteudo || !versaoConteudoSelecionadaId}
+                  onClick={() => void trocarVersaoConteudo()}
+                  className="flex items-center gap-2 bg-emerald-400 px-4 py-2 text-xs font-black text-black transition-colors hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  {trocandoVersaoConteudo && <Loader2 size={13} className="animate-spin" />}
+                  Trocar versão
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -188,6 +188,8 @@ pub struct ModInfo {
     pub file_name: String,
     pub platform: ModPlatform,
     pub dependencies: Vec<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -425,7 +427,7 @@ pub fn salvar_sessao_social_local(sessao: Option<String>) -> Result<(), String> 
 pub struct LauncherState {
     pub account: Arc<Mutex<Option<MinecraftAccount>>>,
     pub accounts: Arc<Mutex<Vec<MinecraftAccount>>>,
-    pub instances_path: PathBuf,
+    pub(crate) instances_path: Arc<Mutex<PathBuf>>,
     pub processos_instancias: Arc<Mutex<HashMap<String, u32>>>,
 }
 
@@ -522,7 +524,10 @@ impl LauncherState {
 
     pub fn iniciar_monitoramento_tempo_jogado(&self, instance_id: &str, pid: u32) {
         let instance_id = instance_id.to_string();
-        let instances_path = self.instances_path.clone();
+        let Ok(instances_path) = self.caminho_instancias() else {
+            eprintln!("[Instâncias] Falha ao acessar a pasta durante o monitoramento.");
+            return;
+        };
         let processos_instancias = Arc::clone(&self.processos_instancias);
 
         tauri::async_runtime::spawn(async move {
@@ -601,12 +606,24 @@ impl LauncherState {
     }
 
     pub fn finalizar_tempo_jogado_instancia(&self, instance_id: &str) -> Result<(), String> {
-        Self::atualizar_tempo_jogado_instancia_por_caminho(
-            &self.instances_path,
-            instance_id,
-            true,
-            true,
-        )
+        let instances_path = self.caminho_instancias()?;
+        Self::atualizar_tempo_jogado_instancia_por_caminho(&instances_path, instance_id, true, true)
+    }
+
+    pub fn caminho_instancias(&self) -> Result<PathBuf, String> {
+        self.instances_path
+            .lock()
+            .map(|caminho| caminho.clone())
+            .map_err(|_| "Falha ao acessar a pasta de instâncias".to_string())
+    }
+
+    pub fn atualizar_caminho_instancias(&self, caminho: PathBuf) -> Result<(), String> {
+        let mut caminho_atual = self
+            .instances_path
+            .lock()
+            .map_err(|_| "Falha ao atualizar a pasta de instâncias".to_string())?;
+        *caminho_atual = caminho;
+        Ok(())
     }
 
     pub fn new() -> Self {
@@ -615,7 +632,25 @@ impl LauncherState {
             .map(|app_data| PathBuf::from(app_data).join("dome"))
             .unwrap_or_else(|_| PathBuf::from("."));
 
-        let instances_path = data_path.join("instances");
+        let instances_path =
+            match crate::comandos::configuracoes_java::carregar_configuracoes_locais() {
+                Ok(configuracoes) => {
+                    let caminho = PathBuf::from(configuracoes.instances_path);
+                    if caminho.is_absolute() {
+                        caminho
+                    } else {
+                        eprintln!("[Instâncias] Caminho configurado não é absoluto; usando o local padrão.");
+                        crate::comandos::configuracoes_java::get_default_instances_path()
+                    }
+                }
+                Err(erro) => {
+                    eprintln!(
+                        "[Instâncias] Configuração de pasta inválida ({}); usando o local padrão.",
+                        erro
+                    );
+                    crate::comandos::configuracoes_java::get_default_instances_path()
+                }
+            };
 
         // Criar o diretório se não existir
         if let Err(e) = std::fs::create_dir_all(&instances_path) {
@@ -629,7 +664,7 @@ impl LauncherState {
         let state = Self {
             account: Arc::new(Mutex::new(account)),
             accounts: Arc::new(Mutex::new(accounts)),
-            instances_path,
+            instances_path: Arc::new(Mutex::new(instances_path)),
             processos_instancias: Arc::new(Mutex::new(HashMap::new())),
         };
 
@@ -868,8 +903,9 @@ impl LauncherState {
         // Carregar instâncias do diretório
         let mut instances = Vec::new();
         let mut ids_vistos = HashSet::new();
+        let instances_path = self.caminho_instancias()?;
 
-        if let Ok(entries) = std::fs::read_dir(&self.instances_path) {
+        if let Ok(entries) = std::fs::read_dir(instances_path) {
             for entry in entries.flatten() {
                 if entry.path().is_dir() {
                     let config_path = entry.path().join("instance.json");
@@ -895,6 +931,7 @@ impl LauncherState {
                                     if icone_generico {
                                         let caminho_modpack = entry.path().join("modpack.json");
                                         if caminho_modpack.exists() {
+                                            let mut encontrou_icone_modpack = false;
                                             if let Ok(conteudo_modpack) =
                                                 std::fs::read_to_string(&caminho_modpack)
                                             {
@@ -910,9 +947,13 @@ impl LauncherState {
                                                         .filter(|valor| !valor.is_empty())
                                                     {
                                                         instance.icon = Some(icone_modpack);
+                                                        encontrou_icone_modpack = true;
                                                         precisa_salvar = true;
                                                     }
                                                 }
+                                            }
+                                            if !encontrou_icone_modpack {
+                                                instance.icon = None;
                                             }
                                         }
                                     }

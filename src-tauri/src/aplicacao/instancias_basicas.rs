@@ -1,4 +1,24 @@
 use super::*;
+use base64::Engine as _;
+
+const LIMITE_ICONE_INSTANCIA_BYTES: usize = 1024 * 1024;
+
+pub(crate) fn validar_icone_instancia(icone: &str) -> Result<(), String> {
+    let dados_base64 = icone
+        .strip_prefix("data:image/png;base64,")
+        .ok_or_else(|| "A imagem da instância deve estar no formato PNG.".to_string())?;
+    let dados = base64::engine::general_purpose::STANDARD
+        .decode(dados_base64)
+        .map_err(|_| "A imagem da instância é inválida.".to_string())?;
+    if !dados.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("O conteúdo da imagem da instância não é um PNG válido.".to_string());
+    }
+    if dados.len() > LIMITE_ICONE_INSTANCIA_BYTES {
+        return Err("A imagem processada deve ter no máximo 1 MB.".to_string());
+    }
+
+    Ok(())
+}
 
 #[tauri::command]
 pub(crate) async fn get_minecraft_versions() -> Result<VersionManifest, String> {
@@ -109,11 +129,41 @@ pub(crate) async fn update_instance_name(
 }
 
 #[tauri::command]
+pub(crate) async fn update_instance_icon(
+    state: State<'_, LauncherState>,
+    instance_id: String,
+    icon: String,
+) -> Result<(), String> {
+    validar_icone_instancia(&icon)?;
+    let instance_path = caminho_instancia_por_id(&state, &instance_id)?;
+    let config_path = instance_path.join("instance.json");
+
+    if !config_path.exists() {
+        return Err(format!("Instância '{}' não encontrada", instance_id));
+    }
+
+    let content = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Erro ao ler instance.json: {}", e))?;
+    let mut instance: Instance = serde_json::from_str(&content)
+        .map_err(|e| format!("Erro ao parsear instance.json: {}", e))?;
+    instance.icon = Some(icon);
+
+    let new_content = serde_json::to_string_pretty(&instance)
+        .map_err(|e| format!("Erro ao serializar instance.json: {}", e))?;
+    std::fs::write(&config_path, new_content)
+        .map_err(|e| format!("Erro ao salvar instance.json: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_instance_settings(
     state: State<'_, LauncherState>,
     instance_id: String,
     memory: Option<u32>,
+    usar_memoria_personalizada: Option<bool>,
     java_args: Option<String>,
+    usar_argumentos_jvm_personalizados: Option<bool>,
     mc_args: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
@@ -131,14 +181,27 @@ pub(crate) async fn update_instance_settings(
     let mut instance: Instance = serde_json::from_str(&content)
         .map_err(|e| format!("Erro ao parsear instance.json: {}", e))?;
 
-    if let Some(memoria) = memory {
-        if !(512..=65536).contains(&memoria) {
-            return Err("Memória da instância deve estar entre 512 e 65536 MB.".to_string());
+    if let Some(usar_memoria) = usar_memoria_personalizada {
+        if usar_memoria {
+            let memoria = memory.ok_or(
+                "Informe a memória da instância ao ativar a alocação personalizada.".to_string(),
+            )?;
+            if !(512..=65536).contains(&memoria) {
+                return Err("Memória da instância deve estar entre 512 e 65536 MB.".to_string());
+            }
+            instance.memory = Some(memoria);
+        } else {
+            instance.memory = None;
         }
-        instance.memory = Some(memoria);
     }
 
-    if let Some(java_args_valor) = java_args {
+    if let Some(usar_argumentos) = usar_argumentos_jvm_personalizados {
+        instance.java_args = if usar_argumentos {
+            Some(java_args.unwrap_or_default().trim().to_string())
+        } else {
+            None
+        };
+    } else if let Some(java_args_valor) = java_args {
         let texto = java_args_valor.trim();
         instance.java_args = if texto.is_empty() {
             None
@@ -271,7 +334,7 @@ pub(crate) async fn rename_instance_folder(
 
 #[cfg(test)]
 mod testes {
-    use super::normalizar_nome_pasta_instancia;
+    use super::{normalizar_nome_pasta_instancia, validar_icone_instancia};
 
     #[test]
     fn adapta_caracteres_invalidos_para_nome_de_pasta() {
@@ -284,6 +347,15 @@ mod testes {
             normalizar_nome_pasta_instancia("  Wynncraft  "),
             "wynncraft"
         );
+    }
+
+    #[test]
+    fn valida_icone_png_embutido() {
+        let png_um_pixel = "data:image/png;base64,\
+            iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        assert!(validar_icone_instancia(png_um_pixel).is_ok());
+        assert!(validar_icone_instancia("data:image/jpeg;base64,/9j/4AAQ").is_err());
+        assert!(validar_icone_instancia("data:image/png;base64,AAAA").is_err());
     }
 }
 

@@ -22,6 +22,7 @@ pub(crate) struct LoaderVersionsResponse {
 #[tauri::command]
 pub(crate) async fn get_loader_versions(
     loader_type: String,
+    minecraft_version: Option<String>,
 ) -> Result<LoaderVersionsResponse, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -30,10 +31,20 @@ pub(crate) async fn get_loader_versions(
 
     let versions = match loader_type.to_lowercase().as_str() {
         "fabric" => {
-            // API do Fabric para versões do loader
-            let url = "https://meta.fabricmc.net/v2/versions/loader";
+            let minecraft_version = minecraft_version
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty());
+            let url = minecraft_version
+                .map(|version| {
+                    format!(
+                        "https://meta.fabricmc.net/v2/versions/loader/{}",
+                        urlencoding::encode(version)
+                    )
+                })
+                .unwrap_or_else(|| "https://meta.fabricmc.net/v2/versions/loader".to_string());
             let response = client
-                .get(url)
+                .get(&url)
                 .send()
                 .await
                 .map_err(|e| format!("Erro ao buscar versões do Fabric: {}", e))?;
@@ -53,8 +64,9 @@ pub(crate) async fn get_loader_versions(
             fabric_versions
                 .iter()
                 .filter_map(|v| {
-                    let version = v["version"].as_str()?.to_string();
-                    let stable = v["stable"].as_bool();
+                    let loader = v.get("loader").unwrap_or(v);
+                    let version = loader["version"].as_str()?.to_string();
+                    let stable = loader["stable"].as_bool();
                     Some(LoaderVersionInfo { version, stable })
                 })
                 .collect::<Vec<_>>()
@@ -86,6 +98,12 @@ pub(crate) async fn get_loader_versions(
                     if let Some(forge_version) = value.as_str() {
                         // Extrair versão do MC a partir da chave
                         if let Some(mc_version) = key.split('-').next() {
+                            if minecraft_version
+                                .as_deref()
+                                .is_some_and(|version| mc_version != version.trim())
+                            {
+                                continue;
+                            }
                             let full_version = format!("{}-{}", mc_version, forge_version);
                             versions_set.insert(full_version);
                         }
@@ -101,8 +119,7 @@ pub(crate) async fn get_loader_versions(
                 })
                 .collect();
 
-            // Ordenar por versão (mais recente primeiro)
-            versions.sort_by(|a, b| b.version.cmp(&a.version));
+            versions.sort_by(|a, b| comparar_versoes_loader_desc(&a.version, &b.version));
             versions
         }
         "neoforge" => {
@@ -129,17 +146,32 @@ pub(crate) async fn get_loader_versions(
 
             // O endpoint retorna um array de versões
             if let Some(versions_arr) = neoforge_data["versions"].as_array() {
-                versions_arr
+                let prefixo_minecraft = minecraft_version
+                    .as_deref()
+                    .map(|versao| {
+                        prefixo_neoforge_para_minecraft(versao).ok_or_else(|| {
+                            format!("Versão do Minecraft inválida para o NeoForge: {}", versao)
+                        })
+                    })
+                    .transpose()?;
+                let mut versions = versions_arr
                     .iter()
                     .filter_map(|v| {
                         let version = v.as_str()?.to_string();
+                        if prefixo_minecraft
+                            .as_deref()
+                            .is_some_and(|prefixo| !version.starts_with(prefixo))
+                        {
+                            return None;
+                        }
                         Some(LoaderVersionInfo {
                             version,
                             stable: Some(true),
                         })
                     })
-                    .rev() // Versões mais recentes primeiro
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                versions.sort_by(|a, b| comparar_versoes_loader_desc(&a.version, &b.version));
+                versions
             } else {
                 Vec::new()
             }
@@ -157,6 +189,38 @@ pub(crate) async fn get_loader_versions(
     }
 
     Ok(LoaderVersionsResponse { versions })
+}
+
+fn comparar_versoes_loader_desc(a: &str, b: &str) -> std::cmp::Ordering {
+    let componentes = |versao: &str| {
+        versao
+            .split(|caractere: char| !caractere.is_ascii_digit())
+            .filter(|parte| !parte.is_empty())
+            .filter_map(|parte| parte.parse::<u64>().ok())
+            .collect::<Vec<_>>()
+    };
+
+    componentes(b).cmp(&componentes(a)).then_with(|| b.cmp(a))
+}
+
+fn prefixo_neoforge_para_minecraft(minecraft_version: &str) -> Option<String> {
+    let partes = minecraft_version.trim().split('.').collect::<Vec<_>>();
+    if partes.is_empty()
+        || partes.iter().any(|parte| {
+            parte.is_empty() || !parte.chars().all(|caractere| caractere.is_ascii_digit())
+        })
+    {
+        return None;
+    }
+
+    if partes[0] == "1" {
+        let minor = partes.get(1)?;
+        let patch = partes.get(2).copied().unwrap_or("0");
+        return Some(format!("{}.{}.", minor, patch));
+    }
+
+    let ciclo = partes.get(1)?;
+    Some(format!("{}.{}.", partes[0], ciclo))
 }
 
 // ===== FUNÇÕES DE MODS E CONTEÚDO =====
@@ -242,34 +306,27 @@ pub(super) async fn install_forge_loader(
         .to_str()
         .ok_or_else(|| "Caminho do instalador Forge inválido.".to_string())?;
 
-    let mut tentativas: Vec<String> = Vec::new();
-    for modo in ["--installClient", "--installServer"] {
-        let mut comando_instalador = std::process::Command::new("java");
-        #[cfg(target_os = "windows")]
-        comando_instalador.creation_flags(CREATE_NO_WINDOW);
-        let output = comando_instalador
-            .args(["-jar", instalador_str, modo, instance_str])
-            .current_dir(instance_path)
-            .output()
-            .map_err(|e| format!("Erro ao executar instalador Forge: {}", e))?;
+    let mut comando_instalador = std::process::Command::new("java");
+    #[cfg(target_os = "windows")]
+    comando_instalador.creation_flags(CREATE_NO_WINDOW);
+    let output = comando_instalador
+        .args(["-jar", instalador_str, "--installClient", instance_str])
+        .current_dir(instance_path)
+        .output()
+        .map_err(|e| format!("Erro ao executar instalador Forge: {}", e))?;
 
-        if output.status.success() {
-            // Limpar arquivos temporários
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return Ok(());
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detalhe = if !stderr.is_empty() { stderr } else { stdout };
-        tentativas.push(format!("{} -> {}", modo, detalhe));
+    if output.status.success() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Ok(());
     }
 
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detalhe = if !stderr.is_empty() { stderr } else { stdout };
     let _ = std::fs::remove_dir_all(temp_dir);
     Err(format!(
-        "Falha ao instalar Forge (versão {}). {}",
-        versao_forge,
-        tentativas.join(" | ")
+        "Falha ao instalar o perfil de cliente Forge (versão {}). {}",
+        versao_forge, detalhe
     ))
 }
 
@@ -392,45 +449,126 @@ pub(super) async fn install_fabric_loader(
 
 pub(super) async fn install_neoforge_loader(
     instance_path: &std::path::Path,
-    _minecraft_version: &str,
+    minecraft_version: &str,
     neoforge_version: &str,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(180))
+        .user_agent("DomeLauncher/1.0 (+https://domestudios.com.br)")
+        .build()
+        .map_err(|e| format!("Erro ao criar cliente HTTP: {}", e))?;
     let installer_url = format!(
         "https://maven.neoforged.net/releases/net/neoforged/neoforge/{}/neoforge-{}-installer.jar",
         neoforge_version, neoforge_version
     );
 
-    let temp_dir = std::env::temp_dir().join("dome_launcher_neoforge_installer");
+    let temp_dir = std::env::temp_dir().join(format!(
+        "dome_launcher_neoforge_installer_{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
 
     let installer_path = temp_dir.join("neoforge-installer.jar");
 
-    // Download do installer
     let response = client
         .get(&installer_url)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    std::fs::write(&installer_path, bytes).map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Erro ao baixar instalador NeoForge: {}", e))?;
+    if !response.status().is_success() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(format!(
+            "Falha ao baixar instalador NeoForge {}: {}",
+            neoforge_version,
+            response.status()
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Erro ao ler instalador NeoForge: {}", e))?;
+    std::fs::write(&installer_path, bytes)
+        .map_err(|e| format!("Erro ao salvar instalador NeoForge: {}", e))?;
 
-    // Executar installer
+    preparar_diretorio_launcher_para_instalador(instance_path, minecraft_version)?;
+
+    let instance_str = instance_path
+        .to_str()
+        .ok_or_else(|| "Caminho da instância inválido.".to_string())?;
+    let installer_str = installer_path
+        .to_str()
+        .ok_or_else(|| "Caminho do instalador NeoForge inválido.".to_string())?;
+
     let mut comando_instalador = std::process::Command::new("java");
     #[cfg(target_os = "windows")]
     comando_instalador.creation_flags(CREATE_NO_WINDOW);
     let output = comando_instalador
-        .args(["-jar", installer_path.to_str().unwrap(), "--installServer"])
+        .args(["-jar", installer_str, "--installClient", instance_str])
         .current_dir(instance_path)
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Erro ao executar instalador NeoForge: {}", e))?;
 
     if !output.status.success() {
-        return Err("Falha ao instalar NeoForge".to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detalhe = if !stderr.is_empty() { stderr } else { stdout };
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(format!(
+            "Falha ao instalar NeoForge {} para Minecraft {}. {}",
+            neoforge_version, minecraft_version, detalhe
+        ));
     }
 
-    // Limpar arquivos temporários
+    let perfil_instalado = instance_path
+        .join("versions")
+        .join(format!("neoforge-{}", neoforge_version))
+        .join(format!("neoforge-{}.json", neoforge_version));
+    if !perfil_instalado.exists() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(format!(
+            "O instalador NeoForge terminou sem criar o perfil de cliente esperado: {}",
+            perfil_instalado.display()
+        ));
+    }
+
+    std::fs::copy(
+        &perfil_instalado,
+        instance_path.join("neoforge_manifest.json"),
+    )
+    .map_err(|e| format!("Erro ao salvar perfil NeoForge da instância: {}", e))?;
+
     let _ = std::fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
+fn preparar_diretorio_launcher_para_instalador(
+    instance_path: &std::path::Path,
+    minecraft_version: &str,
+) -> Result<(), String> {
+    let versao_dir = instance_path.join("versions").join(minecraft_version);
+    std::fs::create_dir_all(&versao_dir)
+        .map_err(|e| format!("Erro ao preparar diretório da versão: {}", e))?;
+
+    let manifesto_origem = instance_path.join("version_manifest.json");
+    let manifesto_destino = versao_dir.join(format!("{}.json", minecraft_version));
+    if manifesto_origem.exists() && !manifesto_destino.exists() {
+        std::fs::copy(&manifesto_origem, &manifesto_destino)
+            .map_err(|e| format!("Erro ao preparar manifesto para o NeoForge: {}", e))?;
+    }
+
+    let cliente_origem = instance_path.join("bin").join("client.jar");
+    let cliente_destino = versao_dir.join(format!("{}.jar", minecraft_version));
+    if cliente_origem.exists() && !cliente_destino.exists() {
+        std::fs::copy(&cliente_origem, &cliente_destino)
+            .map_err(|e| format!("Erro ao preparar cliente para o NeoForge: {}", e))?;
+    }
+
+    let launcher_profiles = instance_path.join("launcher_profiles.json");
+    if !launcher_profiles.exists() {
+        std::fs::write(&launcher_profiles, "{\"profiles\":{}}")
+            .map_err(|e| format!("Erro ao preparar perfil do launcher: {}", e))?;
+    }
 
     Ok(())
 }
@@ -443,6 +581,7 @@ pub(crate) async fn create_instance(
     mc_type: String,
     loader_type: Option<String>,
     loader_version: Option<String>,
+    icon: Option<String>,
 ) -> Result<(), String> {
     println!("=== INICIANDO CRIAÇÃO DE INSTÂNCIA ===");
     println!("Nome: {}, Versão: {}, Tipo: {}", name, version, mc_type);
@@ -532,6 +671,13 @@ pub(crate) async fn create_instance(
     };
 
     // 5. Salvar registro
+    let icon = match icon {
+        Some(icon) => {
+            super::instancias_basicas::validar_icone_instancia(&icon)?;
+            icon
+        }
+        None => format!("https://api.dicebear.com/9.x/shapes/svg?seed={}", id),
+    };
     let instance = Instance {
         id: id.clone(),
         name,
@@ -548,10 +694,7 @@ pub(crate) async fn create_instance(
             },
         )),
         loader_version: loader_version_final,
-        icon: Some(format!(
-            "https://api.dicebear.com/9.x/shapes/svg?seed={}",
-            id
-        )),
+        icon: Some(icon),
         created: chrono::Utc::now().to_rfc3339(),
         last_played: None,
         tempo_total_jogado_segundos: 0,
@@ -716,14 +859,24 @@ pub(super) async fn download_instance_files(
     let bin_path = instance_path.join("bin");
     std::fs::create_dir_all(&bin_path).map_err(|e| e.to_string())?;
 
-    if !bin_path.join("client.jar").exists() {
+    let client_path = bin_path.join("client.jar");
+    let precisa_baixar_cliente = std::fs::metadata(&client_path)
+        .map(|metadata| metadata.len() != details.downloads.client.size)
+        .unwrap_or(true);
+    if precisa_baixar_cliente {
         let jar_res = client
             .get(client_download_url)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
-        let mut file =
-            std::fs::File::create(bin_path.join("client.jar")).map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Erro ao baixar o cliente Minecraft: {}", e))?;
+        if !jar_res.status().is_success() {
+            return Err(format!(
+                "Falha ao baixar o cliente Minecraft: {}",
+                jar_res.status()
+            ));
+        }
+        let mut file = std::fs::File::create(&client_path)
+            .map_err(|e| format!("Erro ao preparar o cliente Minecraft: {}", e))?;
         let content = jar_res.bytes().await.map_err(|e| e.to_string())?;
         std::io::copy(&mut &content[..], &mut file).map_err(|e| e.to_string())?;
     }
@@ -1217,26 +1370,161 @@ pub(super) async fn adjust_fabric_manifest(
 pub(super) async fn adjust_neoforge_manifest(
     details: &mut VersionDetail,
     neoforge_version: &str,
+    instance_path: &std::path::Path,
 ) -> Result<(), String> {
-    // Para NeoForge, similar ao Forge
-    let client = reqwest::Client::new();
-    let neoforge_manifest_url = format!(
-        "https://maven.neoforged.net/releases/net/neoforged/neoforge/{}/neoforge-{}.json",
-        neoforge_version, neoforge_version
-    );
+    let manifesto_path = instance_path.join("neoforge_manifest.json");
+    let id_esperado = format!("neoforge-{}", neoforge_version);
+    let precisa_instalar = if manifesto_path.exists() {
+        let conteudo = std::fs::read_to_string(&manifesto_path)
+            .map_err(|e| format!("Erro ao ler perfil NeoForge: {}", e))?;
+        let perfil: serde_json::Value = serde_json::from_str(&conteudo)
+            .map_err(|e| format!("Perfil NeoForge inválido: {}", e))?;
+        perfil.get("id").and_then(|id| id.as_str()) != Some(id_esperado.as_str())
+    } else {
+        true
+    };
 
-    let response = client
-        .get(&neoforge_manifest_url)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if response.status().is_success() {
-        let neoforge_details: VersionDetail = response.json().await.map_err(|e| e.to_string())?;
-        *details = neoforge_details;
+    if precisa_instalar {
+        println!(
+            "[NeoForge] Perfil de cliente ausente ou desatualizado. Instalando {} para Minecraft {}...",
+            neoforge_version, details.id
+        );
+        install_neoforge_loader(instance_path, &details.id, neoforge_version).await?;
     }
 
+    let conteudo = std::fs::read_to_string(&manifesto_path)
+        .map_err(|e| format!("Erro ao ler perfil NeoForge instalado: {}", e))?;
+    let perfil: serde_json::Value = serde_json::from_str(&conteudo)
+        .map_err(|e| format!("Erro ao interpretar perfil NeoForge: {}", e))?;
+
+    mesclar_perfil_loader(
+        details,
+        &perfil,
+        "NeoForge",
+        "https://maven.neoforged.net/releases/",
+    )
+}
+
+fn mesclar_perfil_loader(
+    details: &mut VersionDetail,
+    perfil: &serde_json::Value,
+    nome_loader: &str,
+    repositorio_padrao: &str,
+) -> Result<(), String> {
+    let main_class = perfil
+        .get("mainClass")
+        .and_then(|valor| valor.as_str())
+        .filter(|valor| !valor.trim().is_empty())
+        .ok_or_else(|| {
+            format!(
+                "Perfil {} não contém uma classe principal válida.",
+                nome_loader
+            )
+        })?;
+    details.main_class = main_class.to_string();
+
+    let mut nomes_existentes: std::collections::HashSet<String> = details
+        .libraries
+        .iter()
+        .map(|biblioteca| biblioteca.name.clone())
+        .collect();
+
+    if let Some(bibliotecas) = perfil.get("libraries").and_then(|valor| valor.as_array()) {
+        for biblioteca_json in bibliotecas {
+            let Some(nome) = biblioteca_json.get("name").and_then(|valor| valor.as_str()) else {
+                continue;
+            };
+            if nomes_existentes.contains(nome) {
+                continue;
+            }
+
+            let mut biblioteca: crate::launcher::Library =
+                serde_json::from_value(biblioteca_json.clone()).map_err(|e| {
+                    format!(
+                        "Biblioteca inválida no perfil {} ({}): {}",
+                        nome_loader, nome, e
+                    )
+                })?;
+            if biblioteca
+                .downloads
+                .as_ref()
+                .and_then(|downloads| downloads.artifact.as_ref())
+                .and_then(|artefato| artefato.path.as_ref())
+                .is_none()
+            {
+                biblioteca.downloads = criar_download_maven(nome, repositorio_padrao);
+            }
+
+            details.libraries.push(biblioteca);
+            nomes_existentes.insert(nome.to_string());
+        }
+    }
+
+    if let Some(argumentos_perfil) = perfil.get("arguments").and_then(|valor| valor.as_object()) {
+        let argumentos = details
+            .arguments
+            .get_or_insert_with(|| serde_json::json!({}));
+        let argumentos = argumentos
+            .as_object_mut()
+            .ok_or_else(|| "Argumentos da versão base estão em formato inválido.".to_string())?;
+
+        for tipo in ["jvm", "game"] {
+            let Some(novos) = argumentos_perfil
+                .get(tipo)
+                .and_then(|valor| valor.as_array())
+            else {
+                continue;
+            };
+            let atuais = argumentos
+                .entry(tipo)
+                .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| format!("Argumentos {} da versão base são inválidos.", tipo))?;
+            atuais.extend(novos.iter().cloned());
+        }
+    }
+
+    println!(
+        "[{}] Perfil de cliente aplicado (main class: {}, {} bibliotecas).",
+        nome_loader,
+        details.main_class,
+        details.libraries.len()
+    );
     Ok(())
+}
+
+fn criar_download_maven(
+    coordenada: &str,
+    repositorio_padrao: &str,
+) -> Option<crate::launcher::LibraryDownloads> {
+    let (coordenada, extensao) = coordenada.split_once('@').unwrap_or((coordenada, "jar"));
+    let partes: Vec<&str> = coordenada.split(':').collect();
+    if partes.len() < 3 {
+        return None;
+    }
+
+    let grupo = partes[0].replace('.', "/");
+    let artefato = partes[1];
+    let versao = partes[2];
+    let classificador = partes
+        .get(3)
+        .map(|valor| format!("-{}", valor))
+        .unwrap_or_default();
+    let caminho = format!(
+        "{}/{}/{}/{}-{}{}.{}",
+        grupo, artefato, versao, artefato, versao, classificador, extensao
+    );
+    let repositorio = repositorio_padrao.trim_end_matches('/');
+
+    Some(crate::launcher::LibraryDownloads {
+        artifact: Some(crate::launcher::Artifact {
+            path: Some(caminho.clone()),
+            sha1: None,
+            size: None,
+            url: format!("{}/{}", repositorio, caminho),
+        }),
+        classifiers: None,
+    })
 }
 
 fn substituir_placeholders_jvm(
@@ -1336,4 +1624,40 @@ pub(super) fn coletar_argumentos_jvm_manifesto(
     }
 
     args_jvm
+}
+
+#[cfg(test)]
+mod testes {
+    use super::prefixo_neoforge_para_minecraft;
+
+    #[test]
+    fn converte_versoes_classicas_para_prefixo_neoforge() {
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("1.21.1"),
+            Some("21.1.".to_string())
+        );
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("1.21"),
+            Some("21.0.".to_string())
+        );
+    }
+
+    #[test]
+    fn converte_versoes_anuais_sem_misturar_ciclos() {
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("26.1"),
+            Some("26.1.".to_string())
+        );
+        assert_eq!(
+            prefixo_neoforge_para_minecraft("26.2.1"),
+            Some("26.2.".to_string())
+        );
+    }
+
+    #[test]
+    fn rejeita_versoes_invalidas() {
+        assert_eq!(prefixo_neoforge_para_minecraft("26"), None);
+        assert_eq!(prefixo_neoforge_para_minecraft("26.x"), None);
+        assert_eq!(prefixo_neoforge_para_minecraft(""), None);
+    }
 }

@@ -198,6 +198,7 @@ const Mods: React.FC<ModsProps> = ({ instance }) => {
     try {
       let downloadUrl = ''
       let fileName = mod.file_name || ''
+      let versionId: string | undefined
 
       if (activePlatform === 'modrinth') {
         const gameVersion = instance.version || instance.game_version
@@ -234,6 +235,7 @@ const Mods: React.FC<ModsProps> = ({ instance }) => {
 
         downloadUrl = file.url
         fileName = file.filename || fileName
+        versionId = version.id
       }
 
       await invoke('install_mod', {
@@ -247,7 +249,8 @@ const Mods: React.FC<ModsProps> = ({ instance }) => {
           download_url: downloadUrl,
           file_name: fileName,
           platform: activePlatform === 'modrinth' ? 'modrinth' : 'curseforge',
-          dependencies: []
+          dependencies: [],
+          version_id: versionId
         }
       })
 

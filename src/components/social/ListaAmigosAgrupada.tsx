@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Download, Mail, Plus, Search, Users, X } from '../../iconesPixelados';
+import { Check, Copy, Download, Gamepad2, Mail, Plus, Search, Trash2, Users, X } from '../../iconesPixelados';
 import { cn } from '../../lib/utils';
 import type {
     AmigoSocial,
@@ -10,6 +10,13 @@ import type {
     StatusPresenca,
 } from './tiposSocial';
 import { ImagemAtividade } from './ImagemAtividade';
+import { IndicadorStatusSocial } from './IndicadorStatusSocial';
+import {
+    CabecalhoMenuContextual,
+    ItemMenuContextual,
+    MenuContextual,
+    SeparadorMenuContextual,
+} from '../context-menu/MenuContextual';
 
 type AbaSocial = 'amigos' | 'pedidos';
 
@@ -39,20 +46,15 @@ interface ListaAmigosAgrupadaProps {
     amigoSelecionadoPerfilId: string | null;
     onAbrirChat: (friendProfileId: string) => void;
     onAbrirAtividade?: (amigo: AmigoSocial) => void;
+    onRemoverAmigo: (friendProfileId: string) => void;
     formatarTempoRelativo: (data: string | null | undefined) => string;
     rotuloStatus: (status?: StatusPresenca) => string;
 }
 
 function classeStatus(status?: StatusPresenca): string {
-    if (status === 'ausente') return 'text-amber-300';
+    if (status === 'ausente') return 'text-[#FFC04E]';
     if (status === 'offline') return 'text-white/35';
-    return 'text-emerald-300';
-}
-
-function corStatus(status?: StatusPresenca): string {
-    if (status === 'ausente') return 'bg-amber-400';
-    if (status === 'offline') return 'bg-white/25';
-    return 'bg-emerald-400';
+    return 'text-[#45A366]';
 }
 
 function iniciais(nome: string): string {
@@ -69,6 +71,7 @@ function LinhaAmigo({
     selecionado,
     naoLidas,
     onAbrirChat,
+    onAbrirMenuContexto,
     formatarTempoRelativo,
     rotuloStatus,
 }: {
@@ -76,6 +79,7 @@ function LinhaAmigo({
     selecionado: boolean;
     naoLidas: number;
     onAbrirChat: (friendProfileId: string) => void;
+    onAbrirMenuContexto: (evento: React.MouseEvent, amigo: AmigoSocial) => void;
     formatarTempoRelativo: (data: string | null | undefined) => string;
     rotuloStatus: (status?: StatusPresenca) => string;
 }) {
@@ -83,6 +87,7 @@ function LinhaAmigo({
         <button
             type="button"
             onClick={() => onAbrirChat(amigo.friendProfileId)}
+            onContextMenu={(evento) => onAbrirMenuContexto(evento, amigo)}
             className={cn(
                 'flex w-full items-center gap-3 border px-2.5 py-2 text-left transition-colors',
                 selecionado
@@ -105,7 +110,9 @@ function LinhaAmigo({
                         {iniciais(amigo.nome)}
                     </div>
                 )}
-                <span className={cn('absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[#151515]', corStatus(amigo.status))} />
+                <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#151515]">
+                    <IndicadorStatusSocial status={amigo.status ?? 'offline'} className="h-2.5 w-2.5" />
+                </span>
             </div>
             <div className="min-w-0 flex-1">
                 <p className="truncate text-[12px] font-semibold text-white/85">{amigo.nome}</p>
@@ -133,12 +140,14 @@ function LinhaAmigoJogando({
     naoLidas,
     onAbrirAtividade,
     onAbrirChat,
+    onAbrirMenuContexto,
 }: {
     amigo: AmigoSocial;
     selecionado: boolean;
     naoLidas: number;
     onAbrirAtividade?: (amigo: AmigoSocial) => void;
     onAbrirChat: (friendProfileId: string) => void;
+    onAbrirMenuContexto: (evento: React.MouseEvent, amigo: AmigoSocial) => void;
 }) {
     const atividade = amigo.atividadeAtual;
     const podeAbrirAtividade = Boolean(atividade && atividade.tipo !== 'launcher' && onAbrirAtividade);
@@ -154,6 +163,7 @@ function LinhaAmigoJogando({
 
     return (
         <article
+            onContextMenu={(evento) => onAbrirMenuContexto(evento, amigo)}
             className={cn(
                 'grid w-full grid-cols-[1.75rem_2.5rem_minmax(0,1fr)_auto] items-center gap-2 border px-2 py-2',
                 'text-left transition-colors',
@@ -183,7 +193,9 @@ function LinhaAmigoJogando({
                         {iniciais(amigo.nome)}
                     </span>
                 )}
-                <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[#151515] bg-emerald-400" />
+                <span className="absolute -bottom-1 -right-1 grid h-3.5 w-3.5 place-items-center rounded-full bg-[#151515]">
+                    <IndicadorStatusSocial status={amigo.status ?? 'online'} className="h-2.5 w-2.5" />
+                </span>
             </button>
 
             <button
@@ -261,10 +273,16 @@ export function ListaAmigosAgrupada({
     amigoSelecionadoPerfilId,
     onAbrirChat,
     onAbrirAtividade,
+    onRemoverAmigo,
     formatarTempoRelativo,
     rotuloStatus,
 }: ListaAmigosAgrupadaProps) {
     const [abaAtiva, setAbaAtiva] = useState<AbaSocial>('amigos');
+    const [menuContexto, setMenuContexto] = useState<{
+        amigo: AmigoSocial;
+        x: number;
+        y: number;
+    } | null>(null);
     const totalAmigos = amigosOnline.length + amigosOffline.length;
     const amigosJogando = amigosOnline.filter(
         (amigo) => amigo.atividadeAtual && amigo.atividadeAtual.tipo !== 'launcher'
@@ -282,6 +300,12 @@ export function ListaAmigosAgrupada({
     useEffect(() => {
         if (totalPedidos > 0) setAbaAtiva('pedidos');
     }, [totalPedidos]);
+
+    const abrirMenuContexto = (evento: React.MouseEvent, amigo: AmigoSocial) => {
+        evento.preventDefault();
+        evento.stopPropagation();
+        setMenuContexto({ amigo, x: evento.clientX, y: evento.clientY });
+    };
 
     return (
         <section className="overflow-hidden border border-white/10 bg-[#151515]">
@@ -386,6 +410,7 @@ export function ListaAmigosAgrupada({
                                             naoLidas={naoLidasPorAmigo[amigo.friendProfileId] ?? 0}
                                             onAbrirAtividade={onAbrirAtividade}
                                             onAbrirChat={onAbrirChat}
+                                            onAbrirMenuContexto={abrirMenuContexto}
                                         />
                                     ))}
                                 </div>
@@ -404,6 +429,7 @@ export function ListaAmigosAgrupada({
                                             selecionado={amigoSelecionadoPerfilId === amigo.friendProfileId}
                                             naoLidas={naoLidasPorAmigo[amigo.friendProfileId] ?? 0}
                                             onAbrirChat={onAbrirChat}
+                                            onAbrirMenuContexto={abrirMenuContexto}
                                             formatarTempoRelativo={formatarTempoRelativo}
                                             rotuloStatus={rotuloStatus}
                                         />
@@ -420,6 +446,7 @@ export function ListaAmigosAgrupada({
                                             selecionado={amigoSelecionadoPerfilId === amigo.friendProfileId}
                                             naoLidas={naoLidasPorAmigo[amigo.friendProfileId] ?? 0}
                                             onAbrirChat={onAbrirChat}
+                                            onAbrirMenuContexto={abrirMenuContexto}
                                             formatarTempoRelativo={formatarTempoRelativo}
                                             rotuloStatus={rotuloStatus}
                                         />
@@ -522,6 +549,60 @@ export function ListaAmigosAgrupada({
                     )}
                 </div>
             )}
+
+            <MenuContextual
+                aberto={menuContexto !== null}
+                x={menuContexto?.x ?? 0}
+                y={menuContexto?.y ?? 0}
+                onFechar={() => setMenuContexto(null)}
+                rotulo="Ações do amigo"
+            >
+                {menuContexto && (
+                    <>
+                        <CabecalhoMenuContextual
+                            titulo={menuContexto.amigo.nome}
+                            subtitulo={menuContexto.amigo.handle ? `@${menuContexto.amigo.handle}` : rotuloStatus(menuContexto.amigo.status)}
+                        />
+                        <ItemMenuContextual icone={<Mail size={12} />} onClick={() => {
+                            onAbrirChat(menuContexto.amigo.friendProfileId);
+                            setMenuContexto(null);
+                        }}>
+                            Conversar
+                        </ItemMenuContextual>
+                        {menuContexto.amigo.atividadeAtual?.tipo !== 'launcher' &&
+                            menuContexto.amigo.atividadeAtual && onAbrirAtividade && (
+                            <ItemMenuContextual icone={<Gamepad2 size={12} />} destaque onClick={() => {
+                                onAbrirAtividade(menuContexto.amigo);
+                                setMenuContexto(null);
+                            }}>
+                                Ver instância em jogo
+                            </ItemMenuContextual>
+                        )}
+                        <ItemMenuContextual
+                            icone={<Copy size={12} />}
+                            disabled={!menuContexto.amigo.handle}
+                            onClick={() => {
+                                if (menuContexto.amigo.handle) {
+                                    void navigator.clipboard.writeText(`@${menuContexto.amigo.handle}`);
+                                }
+                                setMenuContexto(null);
+                            }}
+                        >
+                            Copiar @handle
+                        </ItemMenuContextual>
+                        <SeparadorMenuContextual />
+                        <ItemMenuContextual icone={<Trash2 size={12} />} perigo onClick={() => {
+                            const amigo = menuContexto.amigo;
+                            setMenuContexto(null);
+                            if (confirm(`Remover ${amigo.nome} da sua lista de amigos?`)) {
+                                onRemoverAmigo(amigo.friendProfileId);
+                            }
+                        }}>
+                            Remover amizade
+                        </ItemMenuContextual>
+                    </>
+                )}
+            </MenuContextual>
 
         </section>
     );

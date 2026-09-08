@@ -1,8 +1,9 @@
-import { Pencil } from '../../iconesPixelados';
+import { ChevronRight, Pencil } from '../../iconesPixelados';
 import { cn } from '../../lib/utils';
 import type { AtividadeSocial, PerfilSocial } from './tiposSocial';
 import { ImagemAtividade } from './ImagemAtividade';
 import { MenuStatusSocial } from './MenuStatusSocial';
+import type { StatusPresenca } from './tiposSocial';
 
 interface PerfilSocialPainelProps {
   sessaoAtiva: boolean;
@@ -21,7 +22,7 @@ interface PerfilSocialPainelProps {
   handleEditavel: string;
   salvandoPerfil: boolean;
   salvandoStatus: boolean;
-  statusManual: 'online' | 'ausente';
+  statusManual: Exclude<StatusPresenca, 'offline'>;
   aparecerOffline: boolean;
   mensagemPerfil: string | null;
   erroPerfil: string | null;
@@ -30,7 +31,8 @@ interface PerfilSocialPainelProps {
   onSalvarPerfil: () => void;
   onAlterarNome: (valor: string) => void;
   onAlterarHandle: (valor: string) => void;
-  onAtualizarStatus: (status: 'online' | 'ausente', invisivel: boolean) => void;
+  onAtualizarStatus: (status: Exclude<StatusPresenca, 'offline'>, invisivel: boolean) => void;
+  onRecuar?: () => void;
 }
 
 function iniciaisNome(nome: string): string {
@@ -67,6 +69,7 @@ export function PerfilSocialPainel({
   onAlterarNome,
   onAlterarHandle,
   onAtualizarStatus,
+  onRecuar,
 }: PerfilSocialPainelProps) {
   const nomeAtividade = atividadeAtual?.modpackNome || atividadeAtual?.instanciaNome || 'Minecraft';
   const detalhesAtividade = [
@@ -90,6 +93,19 @@ export function PerfilSocialPainel({
 
       {!sessaoAtiva && (
         <div className="space-y-2">
+          {onRecuar && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onRecuar}
+                aria-label="Recolher painel social"
+                title="Recolher painel social"
+                className="grid h-8 w-8 place-items-center border border-white/10 bg-white/[0.025] text-white/40 transition-colors hover:border-white/20 hover:text-white/75"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          )}
           <p className="text-[12px] leading-relaxed text-white/55">Conecte sua identidade do Discord para encontrar amigos e jogar em grupo.</p>
           <button
             onClick={onIniciarLoginDiscord}
@@ -132,17 +148,30 @@ export function PerfilSocialPainel({
               />
               <p className="mt-1 truncate text-[10px] text-white/40">@{handleExibicaoAtual}</p>
             </div>
-            <button
-              onClick={onAbrirEdicao}
-              disabled={carregandoPerfil}
-              aria-label="Editar perfil social"
-              className={cn(
-                'grid h-8 w-8 place-items-center border border-white/10 bg-white/[0.025] transition-colors',
-                carregandoPerfil ? 'cursor-not-allowed text-white/20' : 'text-white/40 hover:border-white/20 hover:text-white/75'
+            <div className="flex shrink-0 gap-1">
+              <button
+                onClick={onAbrirEdicao}
+                disabled={carregandoPerfil}
+                aria-label="Editar perfil social"
+                className={cn(
+                  'grid h-8 w-8 place-items-center border border-white/10 bg-white/[0.025] transition-colors',
+                  carregandoPerfil ? 'cursor-not-allowed text-white/20' : 'text-white/40 hover:border-white/20 hover:text-white/75'
+                )}
+              >
+                <Pencil size={12} />
+              </button>
+              {onRecuar && (
+                <button
+                  type="button"
+                  onClick={onRecuar}
+                  aria-label="Recolher painel social"
+                  title="Recolher painel social"
+                  className="grid h-8 w-8 place-items-center border border-white/10 bg-white/[0.025] text-white/40 transition-colors hover:border-white/20 hover:text-white/75"
+                >
+                  <ChevronRight size={13} />
+                </button>
               )}
-            >
-              <Pencil size={12} />
-            </button>
+            </div>
           </div>
 
           {emJogo && atividadeAtual && atividadeAtual.tipo !== 'launcher' && (
