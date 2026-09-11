@@ -5,6 +5,7 @@ export interface CreatingInstance {
   type: string;
   status: "pending" | "downloading" | "installing" | "complete" | "error";
   progress: number;
+  progressoIndeterminado?: boolean;
   message: string;
   icon: string;
 }
@@ -33,9 +34,12 @@ export function addCreatingInstance(instance: CreatingInstance) {
   notify();
 }
 
-export function updateCreatingInstance(id: string, updates: Partial<CreatingInstance>) {
+export function updateCreatingInstance(
+  id: string,
+  updates: Partial<CreatingInstance>,
+) {
   creatingInstances = creatingInstances.map((i) =>
-    i.id === id ? { ...i, ...updates } : i
+    i.id === id ? { ...i, ...updates } : i,
   );
   notify();
 }
@@ -46,7 +50,12 @@ export function removeCreatingInstance(id: string) {
 }
 
 export function completeCreatingInstance(id: string) {
-  updateCreatingInstance(id, { status: "complete", progress: 100, message: "Instância criada com sucesso!" });
+  updateCreatingInstance(id, {
+    status: "complete",
+    progress: 100,
+    progressoIndeterminado: false,
+    message: "Instância criada com sucesso!",
+  });
   // Remover após alguns segundos
   setTimeout(() => {
     removeCreatingInstance(id);
@@ -54,5 +63,9 @@ export function completeCreatingInstance(id: string) {
 }
 
 export function errorCreatingInstance(id: string, message: string) {
-  updateCreatingInstance(id, { status: "error", message });
+  updateCreatingInstance(id, {
+    status: "error",
+    progressoIndeterminado: false,
+    message,
+  });
 }

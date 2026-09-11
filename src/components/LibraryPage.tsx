@@ -232,7 +232,6 @@ export default function LibraryPage({
     ResultadoImportacaoInstancia[]
   >([]);
   const [erroImportacao, setErroImportacao] = useState<string | null>(null);
-  const [arrastoManualAtivo, setArrastoManualAtivo] = useState(false);
   const [agoraSegundos, setAgoraSegundos] = useState(() =>
     Math.floor(Date.now() / 1000)
   );
@@ -461,59 +460,123 @@ export default function LibraryPage({
     });
   };
 
-  const moverInstanciaDuranteArrasto = (targetInstanceId: string, targetGroupId: string) => {
-    if (!arrastoManualAtivo || !draggedId || draggedId === targetInstanceId) return;
+  const moverInstanciaDuranteArrasto = (
+    idArrastado: string,
+    targetInstanceId: string,
+    targetGroupId: string,
+    posicao: "antes" | "depois"
+  ) => {
+    if (idArrastado === targetInstanceId) return;
 
     setState((prev) => {
       const gruposSemInstancia = prev.groups.map((grupo) => ({
         ...grupo,
-        instanceIds: grupo.instanceIds.filter((id) => id !== draggedId),
+        instanceIds: grupo.instanceIds.filter((id) => id !== idArrastado),
       }));
 
-      return {
-        ...prev,
-        sortKey: "manual",
-        groups: gruposSemInstancia.map((grupo) => {
-          if (grupo.id !== targetGroupId) return grupo;
+      const gruposAtualizados = gruposSemInstancia.map((grupo) => {
+        if (grupo.id !== targetGroupId) return grupo;
 
-          const ids = [...grupo.instanceIds];
-          const indiceDestino = ids.indexOf(targetInstanceId);
-          ids.splice(indiceDestino < 0 ? ids.length : indiceDestino, 0, draggedId);
-          return { ...grupo, instanceIds: deduplicarIds(ids) };
-        }),
-      };
+        const ids = [...grupo.instanceIds];
+        const indiceDestino = ids.indexOf(targetInstanceId);
+        const indiceInsercao = indiceDestino < 0
+          ? ids.length
+          : indiceDestino + (posicao === "depois" ? 1 : 0);
+        ids.splice(indiceInsercao, 0, idArrastado);
+        return { ...grupo, instanceIds: deduplicarIds(ids) };
+      });
+      const ordemMudou = gruposAtualizados.some((grupo, indiceGrupo) => {
+        const idsAnteriores = prev.groups[indiceGrupo]?.instanceIds ?? [];
+        return grupo.instanceIds.length !== idsAnteriores.length
+          || grupo.instanceIds.some((id, indice) => id !== idsAnteriores[indice]);
+      });
+
+      if (!ordemMudou && prev.sortKey === "manual") return prev;
+      return { ...prev, sortKey: "manual", groups: gruposAtualizados };
     });
   };
 
-  const iniciarArrastoManual = (instanceId: string) => {
+  const iniciarArrastoInstancia = (instanceId: string) => {
+    if (state.sortKey !== "manual") {
+      const gruposOrdenados = state.groups.map((grupo) => ({
+        ...grupo,
+        instanceIds: ordenar(grupo.instanceIds).map((instancia) => instancia.id),
+      }));
+      setState((anterior) => ({ ...anterior, sortKey: "manual", groups: gruposOrdenados }));
+    }
     setDraggedId(instanceId);
-    setArrastoManualAtivo(true);
   };
 
-  const finalizarArrastoManual = useCallback(() => {
-    setArrastoManualAtivo(false);
+  const posicionarInstanciaPeloPonteiro = (
+    _instanceId: string,
+    x: number,
+    y: number
+  ) => {
+    document.querySelectorAll<HTMLElement>("[data-destino-arrasto]").forEach((card) => {
+      delete card.dataset.destinoArrasto;
+    });
+    const elemento = document.elementFromPoint(x, y) as HTMLElement | null;
+    const cardAlvo = elemento?.closest<HTMLElement>("[data-instancia-id][data-grupo-id]");
+
+    if (cardAlvo) {
+      const targetInstanceId = cardAlvo.dataset.instanciaId;
+      const targetGroupId = cardAlvo.dataset.grupoId;
+      if (!targetInstanceId || !targetGroupId) return;
+
+      const limites = cardAlvo.getBoundingClientRect();
+      const posicao = cardAlvo.dataset.modoVisualizacao === "grid"
+        ? x < limites.left + limites.width / 2 ? "antes" : "depois"
+        : y < limites.top + limites.height / 2 ? "antes" : "depois";
+      setDragOverGroup(targetGroupId);
+      cardAlvo.dataset.destinoArrasto = posicao;
+      return;
+    }
+
+    const grupoAlvo = elemento?.closest<HTMLElement>("[data-grupo-biblioteca]");
+    setDragOverGroup(grupoAlvo?.dataset.grupoId ?? null);
+  };
+
+  const finalizarArrastoInstancia = (
+    instanceId?: string,
+    x?: number,
+    y?: number
+  ) => {
+    document.querySelectorAll<HTMLElement>("[data-destino-arrasto]").forEach((card) => {
+      delete card.dataset.destinoArrasto;
+    });
+    if (instanceId && x !== undefined && y !== undefined) {
+      const elemento = document.elementFromPoint(x, y) as HTMLElement | null;
+      const cardAlvo = elemento?.closest<HTMLElement>("[data-instancia-id][data-grupo-id]");
+      const grupoAlvo = elemento?.closest<HTMLElement>("[data-grupo-biblioteca]");
+      const targetGroupId = grupoAlvo?.dataset.grupoId;
+      const targetInstanceId = cardAlvo?.dataset.instanciaId;
+
+      if (cardAlvo && targetInstanceId && targetGroupId) {
+        const limites = cardAlvo.getBoundingClientRect();
+        const posicao = cardAlvo.dataset.modoVisualizacao === "grid"
+          ? x < limites.left + limites.width / 2 ? "antes" : "depois"
+          : y < limites.top + limites.height / 2 ? "antes" : "depois";
+        moverInstanciaDuranteArrasto(instanceId, targetInstanceId, targetGroupId, posicao);
+      } else if (targetGroupId) {
+        moverInstanciaParaGrupo(instanceId, targetGroupId);
+      }
+    }
+
     setDraggedId(null);
     setDragOverGroup(null);
-  }, []);
+  };
 
   useEffect(() => {
-    if (!arrastoManualAtivo) return;
-    const aoSoltarMouse = () => finalizarArrastoManual();
-    window.addEventListener("mouseup", aoSoltarMouse);
-    return () => window.removeEventListener("mouseup", aoSoltarMouse);
-  }, [arrastoManualAtivo, finalizarArrastoManual]);
-
-  useEffect(() => {
-    if (!arrastoManualAtivo) return;
+    if (!draggedId) return;
     const cursorAnterior = document.body.style.cursor;
-    const userSelectAnterior = document.body.style.userSelect;
+    const selecaoAnterior = document.body.style.userSelect;
     document.body.style.cursor = "grabbing";
     document.body.style.userSelect = "none";
     return () => {
       document.body.style.cursor = cursorAnterior;
-      document.body.style.userSelect = userSelectAnterior;
+      document.body.style.userSelect = selecaoAnterior;
     };
-  }, [arrastoManualAtivo]);
+  }, [draggedId]);
 
   useEffect(() => {
     if (!menuContexto) return;
@@ -528,17 +591,6 @@ export default function LibraryPage({
       window.removeEventListener("scroll", fecharAoRolar, true);
     };
   }, [menuContexto]);
-
-  const handleGrupoMouseEnter = (groupId: string) => {
-    if (!arrastoManualAtivo || !draggedId) return;
-    setDragOverGroup(groupId);
-  };
-
-  const handleGrupoMouseUp = (groupId: string) => {
-    if (!arrastoManualAtivo || !draggedId) return;
-    moverInstanciaParaGrupo(draggedId, groupId);
-    finalizarArrastoManual();
-  };
 
   const moverGrupoDuranteArrasto = (grupoDestino: string) => {
     if (!grupoArrastadoId || grupoArrastadoId === grupoDestino) return;
@@ -1074,7 +1126,10 @@ export default function LibraryPage({
           </div>
         </div>
       ) : (
-        <div className="min-h-48 space-y-2" onContextMenu={abrirMenuContextoVazio}>
+        <div
+          className="min-h-[calc(100dvh-220px)] space-y-2"
+          onContextMenu={abrirMenuContextoVazio}
+        >
           {instanciasEmImportacao.length > 0 && (
             <SecaoImportacoesEmAndamento
               instancias={instanciasEmImportacao}
@@ -1116,13 +1171,10 @@ export default function LibraryPage({
                 onAbrirMenuContextoGrupo={(evento) => abrirMenuContextoGrupo(evento, grupo)}
                 modoSelecaoMultipla={modoSelecaoMultipla}
                 idsSelecionados={idsSelecionados}
-                onIniciarArrasto={iniciarArrastoManual}
-                onEntrarInstanciaDuranteArrasto={(instanceId) =>
-                  moverInstanciaDuranteArrasto(instanceId, grupo.id)
-                }
-                onMouseEnterGrupo={() => handleGrupoMouseEnter(grupo.id)}
-                onMouseUpGrupo={() => handleGrupoMouseUp(grupo.id)}
-                onFinalizarArrasto={finalizarArrastoManual}
+                onIniciarArrasto={iniciarArrastoInstancia}
+                onMoverArrasto={posicionarInstanciaPeloPonteiro}
+                onFinalizarArrasto={finalizarArrastoInstancia}
+                instanciaSendoArrastadaId={draggedId}
                 onIniciarArrastoGrupo={(evento) => {
                   if (evento.button !== 0) return;
                   evento.preventDefault();
@@ -1427,17 +1479,17 @@ export default function LibraryPage({
                 }}>
                   Criar instância
                 </ItemMenuContextual>
-                <ItemMenuContextual icone={<Upload size={13} />} onClick={() => {
-                  setMenuContexto(null);
-                  setModalEscolhaImportacaoAberto(true);
-                }}>
-                  Importar instância
-                </ItemMenuContextual>
                 <ItemMenuContextual icone={<FolderPlus size={13} />} onClick={() => {
                   setMenuContexto(null);
                   criarGrupo();
                 }}>
                   Criar grupo
+                </ItemMenuContextual>
+                <ItemMenuContextual icone={<Upload size={13} />} onClick={() => {
+                  setMenuContexto(null);
+                  abrirModalImportacao();
+                }}>
+                  Importar instância
                 </ItemMenuContextual>
                 <ItemMenuContextual icone={<Check size={13} />} onClick={() => iniciarSelecaoMultipla()}>
                   Selecionar várias
@@ -1741,6 +1793,7 @@ export default function LibraryPage({
           </motion.div>
         )}
       </AnimatePresence>
+
     </div>
   );
 }
@@ -1824,10 +1877,9 @@ function GrupoWidget({
   modoSelecaoMultipla,
   idsSelecionados,
   onIniciarArrasto,
-  onEntrarInstanciaDuranteArrasto,
-  onMouseEnterGrupo,
-  onMouseUpGrupo,
+  onMoverArrasto,
   onFinalizarArrasto,
+  instanciaSendoArrastadaId,
   onIniciarArrastoGrupo,
   onEntrarGrupoDestino,
   grupoSendoArrastado,
@@ -1855,10 +1907,9 @@ function GrupoWidget({
   modoSelecaoMultipla: boolean;
   idsSelecionados: Set<string>;
   onIniciarArrasto: (id: string) => void;
-  onEntrarInstanciaDuranteArrasto: (id: string) => void;
-  onMouseEnterGrupo: () => void;
-  onMouseUpGrupo: () => void;
-  onFinalizarArrasto: () => void;
+  onMoverArrasto: (id: string, x: number, y: number) => void;
+  onFinalizarArrasto: (id?: string, x?: number, y?: number) => void;
+  instanciaSendoArrastadaId: string | null;
   onIniciarArrastoGrupo: (evento: React.MouseEvent) => void;
   onEntrarGrupoDestino: () => void;
   grupoSendoArrastado: boolean;
@@ -1870,13 +1921,10 @@ function GrupoWidget({
     <motion.div
       layout="position"
       transition={{ layout: { duration: 0.16, ease: "easeOut" } }}
-      onMouseEnter={() => {
-        onMouseEnterGrupo();
-        onEntrarGrupoDestino();
-      }}
-      onMouseUp={onMouseUpGrupo}
-      data-contexto-biblioteca-item
-      className={`rounded-xl border transition-all ${
+      onMouseEnter={onEntrarGrupoDestino}
+      data-grupo-biblioteca
+      data-grupo-id={grupo.id}
+      className={`rounded-xl border transition-colors ${
         dragOver
           ? "border-emerald-500/30 bg-emerald-500/5"
           : "border-transparent"
@@ -1927,7 +1975,14 @@ function GrupoWidget({
             />
           </div>
         ) : (
-          <div className="flex items-center gap-2 flex-1">
+          <div
+            onMouseDown={onIniciarArrastoGrupo}
+            className={cn(
+              "flex flex-1 cursor-grab items-center gap-2",
+              "active:cursor-grabbing"
+            )}
+            title="Arrastar grupo"
+          >
             <FolderOpen size={13} className="text-white/20" />
             <span className="text-xs font-bold text-white/40 uppercase tracking-wider">
               {grupo.name}
@@ -1994,8 +2049,10 @@ function GrupoWidget({
                     onAbrirGerenciador={onAbrirGerenciador}
                     onAbrirMenuContexto={onAbrirMenuContexto}
                     onIniciarArrasto={onIniciarArrasto}
-                    onEntrarDuranteArrasto={onEntrarInstanciaDuranteArrasto}
+                    onMoverArrasto={onMoverArrasto}
                     onFinalizarArrasto={onFinalizarArrasto}
+                    grupoId={grupo.id}
+                    sendoArrastada={instanciaSendoArrastadaId === instance.id}
                     selecionada={
                       modoSelecaoMultipla
                         ? idsSelecionados.has(instance.id)
@@ -2018,8 +2075,10 @@ function GrupoWidget({
                     onAbrirGerenciador={onAbrirGerenciador}
                     onAbrirMenuContexto={onAbrirMenuContexto}
                     onIniciarArrasto={onIniciarArrasto}
-                    onEntrarDuranteArrasto={onEntrarInstanciaDuranteArrasto}
+                    onMoverArrasto={onMoverArrasto}
                     onFinalizarArrasto={onFinalizarArrasto}
+                    grupoId={grupo.id}
+                    sendoArrastada={instanciaSendoArrastadaId === instance.id}
                     selecionada={
                       modoSelecaoMultipla
                         ? idsSelecionados.has(instance.id)
@@ -2039,16 +2098,143 @@ function GrupoWidget({
   );
 }
 
+function useArrastoInstancia({
+  instanceId,
+  onIniciar,
+  onMover,
+  onFinalizar,
+}: {
+  instanceId: string;
+  onIniciar: (id: string) => void;
+  onMover: (id: string, x: number, y: number) => void;
+  onFinalizar: (id?: string, x?: number, y?: number) => void;
+}) {
+  const inicioRef = useRef<{
+    ponteiroId: number;
+    x: number;
+    y: number;
+    ativo: boolean;
+  } | null>(null);
+  const ignorarCliqueRef = useRef(false);
+  const elementoRef = useRef<HTMLDivElement | null>(null);
+  const callbacksRef = useRef({ onIniciar, onMover, onFinalizar });
+  callbacksRef.current = { onIniciar, onMover, onFinalizar };
+
+  useEffect(() => {
+    let quadradoFlutuante: HTMLElement | null = null;
+    let deslocamentoX = 0;
+    let deslocamentoY = 0;
+    const encerrar = (evento?: PointerEvent) => {
+      const inicio = inicioRef.current;
+      if (!inicio || (evento && evento.pointerId !== inicio.ponteiroId)) return;
+      inicioRef.current = null;
+      quadradoFlutuante?.remove();
+      quadradoFlutuante = null;
+      if (inicio.ativo) {
+        callbacksRef.current.onFinalizar(
+          evento ? instanceId : undefined,
+          evento?.clientX,
+          evento?.clientY
+        );
+      }
+    };
+    const mover = (evento: PointerEvent) => {
+      const inicio = inicioRef.current;
+      if (!inicio || evento.pointerId !== inicio.ponteiroId) return;
+      if ((evento.buttons & 1) === 0) {
+        encerrar();
+        return;
+      }
+      if (!inicio.ativo) {
+        if (Math.hypot(evento.clientX - inicio.x, evento.clientY - inicio.y) < 5) return;
+        inicio.ativo = true;
+        ignorarCliqueRef.current = true;
+        const elemento = elementoRef.current;
+        if (elemento) {
+          const limites = elemento.getBoundingClientRect();
+          deslocamentoX = inicio.x - limites.left;
+          deslocamentoY = inicio.y - limites.top;
+          quadradoFlutuante = elemento.cloneNode(true) as HTMLElement;
+          quadradoFlutuante.removeAttribute("data-instancia-id");
+          quadradoFlutuante.removeAttribute("data-grupo-id");
+          quadradoFlutuante.removeAttribute("data-destino-arrasto");
+          quadradoFlutuante.setAttribute("aria-hidden", "true");
+          Object.assign(quadradoFlutuante.style, {
+            position: "fixed",
+            width: `${limites.width}px`,
+            height: `${limites.height}px`,
+            margin: "0",
+            pointerEvents: "none",
+            zIndex: "1000",
+            opacity: "1",
+            transform: "none",
+            transition: "none",
+            backgroundColor: "#202523",
+            boxShadow: "0 12px 30px #0008",
+          });
+          document.body.appendChild(quadradoFlutuante);
+        }
+        callbacksRef.current.onIniciar(instanceId);
+      }
+      if (quadradoFlutuante) {
+        quadradoFlutuante.style.left = `${evento.clientX - deslocamentoX}px`;
+        quadradoFlutuante.style.top = `${evento.clientY - deslocamentoY}px`;
+      }
+      evento.preventDefault();
+      callbacksRef.current.onMover(instanceId, evento.clientX, evento.clientY);
+    };
+    const cancelar = () => encerrar();
+    const tecla = (evento: KeyboardEvent) => {
+      if (evento.key === "Escape") cancelar();
+    };
+    window.addEventListener("pointermove", mover, { passive: false });
+    window.addEventListener("pointerup", encerrar, true);
+    window.addEventListener("pointercancel", cancelar);
+    window.addEventListener("blur", cancelar);
+    window.addEventListener("keydown", tecla);
+    return () => {
+      window.removeEventListener("pointermove", mover);
+      window.removeEventListener("pointerup", encerrar, true);
+      window.removeEventListener("pointercancel", cancelar);
+      window.removeEventListener("blur", cancelar);
+      window.removeEventListener("keydown", tecla);
+      cancelar();
+    };
+  }, [instanceId]);
+
+  const aoPressionar = (evento: React.PointerEvent<HTMLDivElement>) => {
+    if (evento.button !== 0 || !evento.isPrimary) return;
+    ignorarCliqueRef.current = false;
+    elementoRef.current = evento.currentTarget;
+    inicioRef.current = {
+      ponteiroId: evento.pointerId,
+      x: evento.clientX,
+      y: evento.clientY,
+      ativo: false,
+    };
+    evento.preventDefault();
+  };
+
+  const consumirCliqueArrasto = () => {
+    if (!ignorarCliqueRef.current) return false;
+    ignorarCliqueRef.current = false;
+    return true;
+  };
+
+  return { aoPressionar, consumirCliqueArrasto };
+}
+
 // ===== CARD GRID (estilo PrismLauncher) =====
 function CardGrid({
   instance,
-  index,
   onSelect,
   onAbrirGerenciador,
   onAbrirMenuContexto,
   onIniciarArrasto,
-  onEntrarDuranteArrasto,
+  onMoverArrasto,
   onFinalizarArrasto,
+  grupoId,
+  sendoArrastada,
   selecionada,
   modoSelecaoMultipla,
   ativa,
@@ -2060,8 +2246,10 @@ function CardGrid({
   onAbrirGerenciador: (i: Instance) => void;
   onAbrirMenuContexto: (evento: React.MouseEvent, instance: Instance) => void;
   onIniciarArrasto: (id: string) => void;
-  onEntrarDuranteArrasto: (id: string) => void;
-  onFinalizarArrasto: () => void;
+  onMoverArrasto: (id: string, x: number, y: number) => void;
+  onFinalizarArrasto: (id?: string, x?: number, y?: number) => void;
+  grupoId: string;
+  sendoArrastada: boolean;
   selecionada: boolean;
   modoSelecaoMultipla: boolean;
   ativa: boolean;
@@ -2072,26 +2260,34 @@ function CardGrid({
     ativa,
     agoraSegundos
   );
+  const controleArrasto = useArrastoInstancia({
+    instanceId: instance.id,
+    onIniciar: onIniciarArrasto,
+    onMover: onMoverArrasto,
+    onFinalizar: onFinalizarArrasto,
+  });
 
   return (
     <motion.div
       layout="position"
-      onMouseUp={(evento) => {
-        evento.stopPropagation();
-        onFinalizarArrasto();
+      onPointerDown={controleArrasto.aoPressionar}
+      initial={false}
+      animate={{ opacity: sendoArrastada ? 0.35 : 1, scale: 1 }}
+      transition={{ layout: { duration: 0.18, ease: "easeOut" }, opacity: { duration: 0.1 } }}
+      onClick={() => {
+        if (!controleArrasto.consumirCliqueArrasto()) onSelect(instance);
       }}
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ delay: index * 0.02 }}
-      onClick={() => onSelect(instance)}
       onDoubleClick={() => {
         if (!modoSelecaoMultipla) onAbrirGerenciador(instance);
       }}
       onContextMenu={(evento) => onAbrirMenuContexto(evento, instance)}
-      onMouseEnter={() => onEntrarDuranteArrasto(instance.id)}
       data-contexto-biblioteca-item
+      data-instancia-id={instance.id}
+      data-grupo-id={grupoId}
+      data-modo-visualizacao="grid"
       className={cn(
-        "group relative rounded-xl p-3 cursor-pointer transition-all flex flex-col items-center text-center border",
+        "group relative flex cursor-grab flex-col items-center rounded-xl border p-3 text-center transition-colors",
+        "active:cursor-grabbing",
         selecionada
           ? "bg-emerald-500/10 border-emerald-400/30 shadow-realce-selecao"
           : "bg-white/3 hover:bg-white/5 border-white/5 hover:border-white/10"
@@ -2109,21 +2305,6 @@ function CardGrid({
           <Check size={12} />
         </span>
       )}
-      {/* Grip para drag */}
-      <div
-        onMouseDown={(evento) => {
-          if (evento.button !== 0) return;
-          evento.stopPropagation();
-          onIniciarArrasto(instance.id);
-        }}
-        className={cn(
-          "absolute left-1.5 top-1.5 cursor-grab text-white/0 transition-colors",
-          "group-hover:text-white/15 active:cursor-grabbing"
-        )}
-      >
-        <GripVertical size={10} />
-      </div>
-
       {/* Ícone grande */}
       <div className="mb-2 h-16 w-16">
         <div className="w-full h-full rounded-xl bg-[#151516] border border-white/10 p-2 overflow-hidden">
@@ -2158,13 +2339,14 @@ function CardGrid({
 // ===== CARD LISTA =====
 function CardList({
   instance,
-  index,
   onSelect,
   onAbrirGerenciador,
   onAbrirMenuContexto,
   onIniciarArrasto,
-  onEntrarDuranteArrasto,
+  onMoverArrasto,
   onFinalizarArrasto,
+  grupoId,
+  sendoArrastada,
   selecionada,
   modoSelecaoMultipla,
   ativa,
@@ -2176,8 +2358,10 @@ function CardList({
   onAbrirGerenciador: (i: Instance) => void;
   onAbrirMenuContexto: (evento: React.MouseEvent, instance: Instance) => void;
   onIniciarArrasto: (id: string) => void;
-  onEntrarDuranteArrasto: (id: string) => void;
-  onFinalizarArrasto: () => void;
+  onMoverArrasto: (id: string, x: number, y: number) => void;
+  onFinalizarArrasto: (id?: string, x?: number, y?: number) => void;
+  grupoId: string;
+  sendoArrastada: boolean;
   selecionada: boolean;
   modoSelecaoMultipla: boolean;
   ativa: boolean;
@@ -2188,26 +2372,34 @@ function CardList({
     ativa,
     agoraSegundos
   );
+  const controleArrasto = useArrastoInstancia({
+    instanceId: instance.id,
+    onIniciar: onIniciarArrasto,
+    onMover: onMoverArrasto,
+    onFinalizar: onFinalizarArrasto,
+  });
 
   return (
     <motion.div
       layout="position"
-      onMouseUp={(evento) => {
-        evento.stopPropagation();
-        onFinalizarArrasto();
+      onPointerDown={controleArrasto.aoPressionar}
+      initial={false}
+      animate={{ opacity: sendoArrastada ? 0.35 : 1, x: 0 }}
+      transition={{ layout: { duration: 0.18, ease: "easeOut" }, opacity: { duration: 0.1 } }}
+      onClick={() => {
+        if (!controleArrasto.consumirCliqueArrasto()) onSelect(instance);
       }}
-      initial={{ opacity: 0, x: -5 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.02 }}
-      onClick={() => onSelect(instance)}
       onDoubleClick={() => {
         if (!modoSelecaoMultipla) onAbrirGerenciador(instance);
       }}
       onContextMenu={(evento) => onAbrirMenuContexto(evento, instance)}
-      onMouseEnter={() => onEntrarDuranteArrasto(instance.id)}
       data-contexto-biblioteca-item
+      data-instancia-id={instance.id}
+      data-grupo-id={grupoId}
+      data-modo-visualizacao="list"
       className={cn(
-        "group flex items-center gap-3 rounded-xl px-3 py-2 cursor-pointer transition-all border",
+        "group flex cursor-grab items-center gap-3 rounded-xl border px-3 py-2 transition-colors",
+        "active:cursor-grabbing",
         selecionada
           ? "bg-emerald-500/10 border-emerald-400/30 shadow-realce-selecao"
           : "bg-white/2 hover:bg-white/4 border-white/3 hover:border-white/8"
@@ -2225,18 +2417,6 @@ function CardList({
           <Check size={12} />
         </span>
       )}
-      {/* Grip */}
-      <div
-        onMouseDown={(evento) => {
-          if (evento.button !== 0) return;
-          evento.stopPropagation();
-          onIniciarArrasto(instance.id);
-        }}
-        className="text-white/0 group-hover:text-white/15 transition-colors cursor-grab active:cursor-grabbing shrink-0"
-      >
-        <GripVertical size={12} />
-      </div>
-
       {/* Ícone */}
       <div className="shrink-0">
         <div className="w-9 h-9 rounded-lg bg-[#151516] border border-white/10 p-1 overflow-hidden">

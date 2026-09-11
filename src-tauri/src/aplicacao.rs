@@ -4,12 +4,12 @@ use crate::comandos::instancia_sistema::{
 use crate::launcher::{
     Instance, LauncherState, LoaderType, ModInfo, ModPlatform, VersionDetail, VersionManifest,
 };
-use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 mod bootstrap;
 mod conteudo_instalado;
+mod downloads_instancias;
 pub(crate) mod importacao_exportacao;
 mod instancias_basicas;
 mod instancias_criacao;

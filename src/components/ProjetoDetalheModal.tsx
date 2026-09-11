@@ -1007,7 +1007,8 @@ export default function ProjetoDetalheModal({
 
         updateCreatingInstance(idOverlayCriacao, {
           progress: 20,
-          message: "Criando nova instância...",
+          progressoIndeterminado: true,
+          message: "Preparando arquivos da instância...",
         });
 
         const paramsCriacao: Record<string, unknown> = {
@@ -1020,6 +1021,11 @@ export default function ProjetoDetalheModal({
           paramsCriacao.loaderVersion = loaderVersion;
         }
         await invoke("create_instance", paramsCriacao);
+        updateCreatingInstance(idOverlayCriacao, {
+          progress: 45,
+          progressoIndeterminado: false,
+          message: "Registrando informações do modpack...",
+        });
         await invoke("save_modpack_info", {
           instanceId: idInstancia,
           modpackInfo: {
@@ -1033,6 +1039,11 @@ export default function ProjetoDetalheModal({
             source: projeto.source,
             installedVersion: versaoInstalada,
           },
+        });
+        updateCreatingInstance(idOverlayCriacao, {
+          progress: 60,
+          progressoIndeterminado: true,
+          message: "Instalando arquivos do modpack...",
         });
         await invoke("install_modpack_files", {
           instanceId: idInstancia,

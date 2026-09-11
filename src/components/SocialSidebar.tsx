@@ -833,6 +833,7 @@ export default function SocialSidebar({
       type: 'social',
       status: 'downloading',
       progress: 0,
+      progressoIndeterminado: true,
       message: 'Recebendo do seu amigo...',
       icon: '',
     });

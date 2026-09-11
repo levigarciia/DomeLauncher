@@ -3,6 +3,7 @@ import { Icon } from "@iconify/react";
 import atividade from "@iconify-icons/pixelarticons/chart";
 import alerta from "@iconify-icons/pixelarticons/warning-box";
 import setaEsquerda from "@iconify-icons/pixelarticons/arrow-left";
+import setaDireita from "@iconify-icons/pixelarticons/arrow-right";
 import setasVertical from "@iconify-icons/pixelarticons/arrows-vertical";
 import caixa from "@iconify-icons/pixelarticons/archive";
 import calendario from "@iconify-icons/pixelarticons/calendar";
@@ -89,6 +90,7 @@ function criarIcone(icone: any) {
 export const Activity = criarIcone(atividade);
 export const AlertCircle = criarIcone(alerta);
 export const ArrowLeft = criarIcone(setaEsquerda);
+export const ArrowRight = criarIcone(setaDireita);
 export const ArrowUpDown = criarIcone(setasVertical);
 export const Box = criarIcone(caixa);
 export const Calendar = criarIcone(calendario);
