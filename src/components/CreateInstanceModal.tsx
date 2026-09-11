@@ -237,7 +237,8 @@ export default function CreateInstanceModal({
       updateCreatingInstance(instanceId, {
         status: "downloading",
         progress: 30,
-        message: "Baixando arquivos...",
+        progressoIndeterminado: true,
+        message: "Preparando arquivos da instância...",
       });
 
       await invoke("create_instance", params);

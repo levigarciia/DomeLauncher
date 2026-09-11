@@ -47,7 +47,8 @@ export default function CreatingInstancesOverlay() {
                   />
                 </div>
                 <div className="absolute -bottom-1 -right-1">
-                  {instance.status === "downloading" || instance.status === "installing" ? (
+                  {instance.status === "downloading" ||
+                  instance.status === "installing" ? (
                     <div className="w-5 h-5 bg-emerald-500 rounded-full flex items-center justify-center">
                       <Loader2 size={12} className="text-black animate-spin" />
                     </div>
@@ -81,19 +82,35 @@ export default function CreatingInstancesOverlay() {
             </div>
 
             {/* Barra de Progresso */}
-            {(instance.status === "downloading" || instance.status === "installing") && (
+            {(instance.status === "downloading" ||
+              instance.status === "installing") && (
               <div className="mt-3">
                 <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                  <motion.div
-                    className="h-full bg-emerald-500"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${instance.progress}%` }}
-                    transition={{ duration: 0.3 }}
-                  />
+                  {instance.progressoIndeterminado ? (
+                    <motion.div
+                      className="h-full w-1/3 bg-emerald-400"
+                      initial={{ x: "-100%" }}
+                      animate={{ x: "300%" }}
+                      transition={{
+                        duration: 1.1,
+                        ease: "linear",
+                        repeat: Infinity,
+                      }}
+                    />
+                  ) : (
+                    <motion.div
+                      className="h-full bg-emerald-500"
+                      initial={{ width: 0 }}
+                      animate={{ width: `${instance.progress}%` }}
+                      transition={{ duration: 0.3 }}
+                    />
+                  )}
                 </div>
                 <p className="text-[10px] text-white/30 mt-1 flex items-center gap-1">
                   <Download size={10} />
-                  Baixando arquivos...
+                  {instance.progressoIndeterminado
+                    ? "Processando..."
+                    : `${Math.round(instance.progress)}%`}
                 </p>
               </div>
             )}

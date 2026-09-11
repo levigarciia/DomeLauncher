@@ -108,6 +108,36 @@ svg {
     linear-gradient(180deg, #101010 0%, #0f0f0f 100%);
 }
 
+[data-destino-arrasto] {
+  position: relative;
+}
+
+[data-destino-arrasto]::after {
+  content: "";
+  position: absolute;
+  background: #34d399;
+  pointer-events: none;
+  z-index: 2;
+}
+
+[data-modo-visualizacao="grid"][data-destino-arrasto]::after {
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+
+[data-modo-visualizacao="grid"][data-destino-arrasto="antes"]::after { left: -5px; }
+[data-modo-visualizacao="grid"][data-destino-arrasto="depois"]::after { right: -5px; }
+
+[data-modo-visualizacao="list"][data-destino-arrasto]::after {
+  left: 0;
+  right: 0;
+  height: 3px;
+}
+
+[data-modo-visualizacao="list"][data-destino-arrasto="antes"]::after { top: -3px; }
+[data-modo-visualizacao="list"][data-destino-arrasto="depois"]::after { bottom: -3px; }
+
 .launcher-side-menu {
   position: relative;
   background-color: #101010;

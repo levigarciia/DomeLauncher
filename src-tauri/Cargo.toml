@@ -1,6 +1,6 @@
 [package]
 name = "dome-launcher"
-version = "0.2.0"
+version = "0.2.1"
 description = "Launcher desktop da Dome Studios para Minecraft"
 authors = ["Dome Studios"]
 edition = "2021"
@@ -36,6 +36,7 @@ zip = "2.2.2"
 toml = "0.8.23"
 json5 = "0.4.1"
 sha2 = "0.10.9"
+sha1 = "0.10"
 base64 = "0.22.1"
 rand = "0.8.5"
 local-ip-address = "0.6.8"

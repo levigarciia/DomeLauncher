@@ -1,5 +1,7 @@
 import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
+  ArrowRight,
   Avatar,
   Heart,
   Home,
@@ -142,6 +144,7 @@ function encontrarInstanciaDaAtividade(
 
 const CHAVE_ULTIMA_INSTANCIA = "dome:ultima-instancia-iniciada";
 const INTERVALO_VERIFICACAO_INSTANCIAS_MS = 20 * 1000;
+const LIMITE_HISTORICO_NAVEGACAO = 50;
 type TipoExplorePresence = "modpack" | "mod" | "resourcepack" | "shader";
 type FonteExplorePresence = "modrinth" | "curseforge";
 const TITULOS_ABA: Record<string, string> = {
@@ -158,6 +161,10 @@ const TITULOS_ABA: Record<string, string> = {
 export default function App() {
   const { instances, launch, launchServer, remove, fetchInstances } = useLauncher();
   const [activeTab, setActiveTab] = useState("home");
+  const [historicoNavegacao, setHistoricoNavegacao] = useState<{
+    anteriores: string[];
+    proximas: string[];
+  }>({ anteriores: [], proximas: [] });
   const [selectedInstance, setSelectedInstance] = useState<Instance | null>(null);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -193,9 +200,62 @@ export default function App() {
   const ehTelaXl = useBreakpointXl();
   const ultimaAssinaturaPresence = useRef<string>("");
   const menuContaRef = useRef<HTMLDivElement | null>(null);
-  const navegarParaAba = useCallback((aba: string) => {
+  const alterarAba = useCallback((aba: string) => {
     startTransition(() => setActiveTab(aba));
   }, []);
+
+  const navegarParaAba = useCallback((aba: string) => {
+    if (aba === activeTab) return;
+
+    setHistoricoNavegacao((historico) => ({
+      anteriores: [...historico.anteriores, activeTab].slice(-LIMITE_HISTORICO_NAVEGACAO),
+      proximas: [],
+    }));
+    alterarAba(aba);
+  }, [activeTab, alterarAba]);
+
+  const voltarNavegacao = useCallback(() => {
+    const destino = historicoNavegacao.anteriores[
+      historicoNavegacao.anteriores.length - 1
+    ];
+    if (!destino) return;
+
+    setHistoricoNavegacao((historico) => ({
+      anteriores: historico.anteriores.slice(0, -1),
+      proximas: [activeTab, ...historico.proximas].slice(0, LIMITE_HISTORICO_NAVEGACAO),
+    }));
+    alterarAba(destino);
+  }, [activeTab, alterarAba, historicoNavegacao.anteriores]);
+
+  const avancarNavegacao = useCallback(() => {
+    const [destino] = historicoNavegacao.proximas;
+    if (!destino) return;
+
+    setHistoricoNavegacao((historico) => ({
+      anteriores: [...historico.anteriores, activeTab].slice(-LIMITE_HISTORICO_NAVEGACAO),
+      proximas: historico.proximas.slice(1),
+    }));
+    alterarAba(destino);
+  }, [activeTab, alterarAba, historicoNavegacao.proximas]);
+
+  useEffect(() => {
+    const navegarPeloTeclado = (evento: KeyboardEvent) => {
+      if (!evento.altKey || evento.ctrlKey || evento.metaKey || evento.shiftKey) return;
+
+      if (evento.key === "ArrowLeft" && historicoNavegacao.anteriores.length > 0) {
+        evento.preventDefault();
+        voltarNavegacao();
+      }
+
+      if (evento.key === "ArrowRight" && historicoNavegacao.proximas.length > 0) {
+        evento.preventDefault();
+        avancarNavegacao();
+      }
+    };
+
+    window.addEventListener("keydown", navegarPeloTeclado);
+    return () => window.removeEventListener("keydown", navegarPeloTeclado);
+  }, [avancarNavegacao, historicoNavegacao, voltarNavegacao]);
 
   useEffect(() => {
     if (activeTab === "instances") {
@@ -830,6 +890,37 @@ export default function App() {
   return (
     <div className="app-shell launcher-shell relative flex h-screen w-full overflow-hidden text-white">
       <aside className="launcher-side-menu relative z-20 flex w-[81px] shrink-0 flex-col">
+        <div className="absolute inset-x-0 top-0 flex h-[50px] items-center justify-center gap-1">
+          <button
+            type="button"
+            onClick={voltarNavegacao}
+            disabled={historicoNavegacao.anteriores.length === 0}
+            aria-label="Voltar"
+            title="Voltar (Alt + ←)"
+            className={cn(
+              "grid h-7 w-7 place-items-center text-white/55 transition-colors",
+              "hover:bg-white/[0.05] hover:text-white",
+              "disabled:cursor-default disabled:bg-transparent disabled:text-white/15"
+            )}
+          >
+            <ArrowLeft size={15} />
+          </button>
+          <button
+            type="button"
+            onClick={avancarNavegacao}
+            disabled={historicoNavegacao.proximas.length === 0}
+            aria-label="Avançar"
+            title="Avançar (Alt + →)"
+            className={cn(
+              "grid h-7 w-7 place-items-center text-white/55 transition-colors",
+              "hover:bg-white/[0.05] hover:text-white",
+              "disabled:cursor-default disabled:bg-transparent disabled:text-white/15"
+            )}
+          >
+            <ArrowRight size={15} />
+          </button>
+        </div>
+
         <nav className="flex flex-1 flex-col items-center gap-2 px-2 pb-3 pt-[69px]">
           {menuItems.map((item) => (
             <button
