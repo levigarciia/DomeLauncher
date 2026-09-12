@@ -47,6 +47,6 @@ Com o Dome Launcher, você consegue:
 - Site: https://domestudios.com.br/domelauncher
 - Releases: https://github.com/levigarciia/DomeLauncher/releases/latest
 
-Documentação para contribuidores: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+Documentação para contribuidores: [guia do projeto](docs/AGENTS.md) e [integração com a API](docs/API.md)
 
 ---
